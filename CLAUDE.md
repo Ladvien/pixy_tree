@@ -8,9 +8,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Prefer Godot `export` variables over magic numbers or constants
 
 ## Docs
+- MTree Updated branch - https://github.com/GoodPie/modular_tree
 - Godot Rust Book - https://godot-rust.github.io/book/
 - Godot API Docs - https://godot-rust.github.io/docs/ and https://godot-rust.github.io/docs/gdext/master/godot/
 - Godot Github - https://github.com/godot-rust/gdext
+- Other local Godot Addon projects for reference:
+    - Terrain Editor - ~/pixy_terrain
 
 ## Project Overview
 

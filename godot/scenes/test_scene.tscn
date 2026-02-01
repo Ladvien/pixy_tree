@@ -26,3 +26,5 @@ shadow_enabled = true
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_1")
+
+[connection signal="tree_generated" from="PixyTree" to="Camera3D" method="frame_tree"]

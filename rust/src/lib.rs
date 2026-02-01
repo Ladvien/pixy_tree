@@ -1,5 +1,7 @@
 use godot::prelude::*;
 
+mod branch;
+mod editor_plugin;
 mod tree;
 
 struct PixyTreeExtension;

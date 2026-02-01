@@ -8,6 +8,11 @@ extends Camera3D
 @export var rotation_speed: float = 0.005
 @export var zoom_speed: float = 2.0
 
+## 3/4 top-down view settings
+@export var frame_yaw: float = PI / 4.0  ## 45 degrees - corner view
+@export var frame_pitch: float = -PI / 5.0  ## ~36 degrees down from horizontal
+@export var frame_distance_multiplier: float = 1.5  ## Distance relative to tree height
+
 var _yaw: float = 0.0
 var _pitch: float = -0.5
 var _dragging: bool = false
@@ -46,3 +51,18 @@ func _update_camera_position() -> void:
 
 	global_position = target + offset
 	look_at(target, Vector3.UP)
+
+
+## Frame the tree with a 3/4 top-down view for easy assessment
+func frame_tree(height: float, _radius: float) -> void:
+	# Set the target to the vertical center of the tree
+	target = Vector3(0.0, height / 2.0, 0.0)
+
+	# Set 3/4 top-down angle
+	_yaw = frame_yaw
+	_pitch = frame_pitch
+
+	# Calculate distance to fit the tree in view
+	distance = clamp(height * frame_distance_multiplier, min_distance, max_distance)
+
+	_update_camera_position()
