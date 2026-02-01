@@ -3,14 +3,28 @@ use godot::classes::{ArrayMesh, Engine, MeshInstance3D};
 use godot::prelude::*;
 
 use crate::branch::{
-    generate_branch_mesh, generate_branch_origins, generate_sub_branches, BranchConfig, MeshData,
-    SeededRng,
+    generate_branch_mesh, generate_branch_origins, generate_sub_branches, BranchConfig,
+    BranchSegment, MeshData, SeededRng,
 };
+use crate::crown_shape::CrownShape;
+use crate::foliage::{
+    collect_leaf_points, generate_foliage_mesh, BranchInfo, FoliageConfig, FoliagePlacement,
+    FoliagePresetValues, LeafOrientation, LeafStyle,
+};
+use crate::tree_preset::{TreePreset, TreePresetValues};
 
 #[derive(GodotClass)]
 #[class(base=Node3D, init, tool)]
 pub struct PixyTree {
     base: Base<Node3D>,
+
+    // ═══════════════════════════════════════════
+    // Preset
+    // ═══════════════════════════════════════════
+    #[export]
+    #[var(get = get_preset, set = set_preset)]
+    #[init(val = TreePreset::Custom)]
+    preset: TreePreset,
 
     // ═══════════════════════════════════════════
     // Trunk Settings
@@ -100,6 +114,92 @@ pub struct PixyTree {
     sub_branch_scale: f32,
 
     // ═══════════════════════════════════════════
+    // Crown Shape
+    // ═══════════════════════════════════════════
+    /// Crown shape envelope that modulates branch length based on height
+    #[export]
+    #[init(val = CrownShape::Cylindrical)]
+    crown_shape: CrownShape,
+
+    /// How much the crown shape affects branch length (0=uniform, 1=fully shaped)
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 1.0)]
+    crown_influence: f32,
+
+    // ═══════════════════════════════════════════
+    // Foliage Settings
+    // ═══════════════════════════════════════════
+    /// Enable foliage generation
+    #[export]
+    #[init(val = true)]
+    foliage_enabled: bool,
+
+    /// Leaf geometry style
+    #[export]
+    #[init(val = LeafStyle::CrossedPlanes)]
+    leaf_style: LeafStyle,
+
+    /// How foliage is placed on branches
+    #[export]
+    #[init(val = FoliagePlacement::TerminalBranches)]
+    foliage_placement: FoliagePlacement,
+
+    /// Leaf orientation mode
+    #[export]
+    #[init(val = LeafOrientation::RadialOutward)]
+    leaf_orientation: LeafOrientation,
+
+    /// Foliage density (leaves per unit)
+    #[export(range = (0.5, 10.0, 0.5))]
+    #[init(val = 3.0)]
+    foliage_density: f32,
+
+    /// Leaves per cluster (for TipClusters placement)
+    #[export(range = (1.0, 12.0, 1.0))]
+    #[init(val = 4)]
+    cluster_size: i32,
+
+    /// Base leaf size
+    #[export(range = (0.05, 2.0, 0.05))]
+    #[init(val = 0.3)]
+    leaf_size: f32,
+
+    /// Random variation in leaf size (0-0.5)
+    #[export(range = (0.0, 0.5, 0.05))]
+    #[init(val = 0.15)]
+    leaf_size_variation: f32,
+
+    /// Branch radius threshold for foliage (skip thicker branches)
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.15)]
+    foliage_radius_threshold: f32,
+
+    /// Density falloff from bottom to top of crown
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.3)]
+    foliage_height_falloff: f32,
+
+    /// Downward droop amount for leaves
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.2)]
+    leaf_droop: f32,
+
+    /// Random rotation variation for leaves
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.5)]
+    leaf_rotation_variation: f32,
+
+    /// Use crown shape to modulate foliage density
+    #[export]
+    #[init(val = true)]
+    use_crown_foliage_density: bool,
+
+    /// Create foliage as separate mesh (for different materials)
+    #[export]
+    #[init(val = true)]
+    separate_foliage_mesh: bool,
+
+    // ═══════════════════════════════════════════
     // Generation
     // ═══════════════════════════════════════════
     #[export]
@@ -117,6 +217,9 @@ pub struct PixyTree {
     // Internal state (not exported)
     #[init(val = None)]
     mesh_instance: Option<Gd<MeshInstance3D>>,
+
+    #[init(val = None)]
+    foliage_mesh_instance: Option<Gd<MeshInstance3D>>,
 
     /// Hash of properties for change detection
     #[init(val = 0)]
@@ -166,9 +269,55 @@ impl PixyTree {
     #[signal]
     fn tree_generated(height: f32, radius: f32);
 
+    #[func]
+    fn get_preset(&self) -> TreePreset {
+        self.preset
+    }
+
+    #[func]
+    fn set_preset(&mut self, value: TreePreset) {
+        self.preset = value;
+        if let Some(values) = value.get_values() {
+            self.apply_preset_values(&values);
+        }
+    }
+
+    fn apply_preset_values(&mut self, values: &TreePresetValues) {
+        // Trunk
+        self.trunk_height = values.trunk_height;
+        self.trunk_radius = values.trunk_radius;
+        self.radial_segments = values.radial_segments;
+        self.height_segments = values.height_segments;
+
+        // Branch
+        self.branch_start = values.branch_start;
+        self.branch_end = values.branch_end;
+        self.branch_density = values.branch_density;
+        self.branch_length = values.branch_length;
+        self.branch_angle = values.branch_angle;
+        self.branch_radius_ratio = values.branch_radius_ratio;
+        self.branch_taper = values.branch_taper;
+        self.phyllotaxis_angle = values.phyllotaxis_angle;
+        self.branch_randomness = values.branch_randomness;
+        self.up_attraction = values.up_attraction;
+        self.branch_recursion = values.branch_recursion;
+        self.sub_branch_count = values.sub_branch_count;
+        self.sub_branch_scale = values.sub_branch_scale;
+
+        // Crown
+        self.crown_shape = values.crown_shape;
+        self.crown_influence = values.crown_influence;
+
+        // Foliage
+        if let Some(foliage) = &values.foliage {
+            self.apply_foliage_preset_values(foliage);
+        }
+    }
+
     /// Compute a hash of all generation-relevant properties for change detection
     fn compute_property_hash(&self) -> u64 {
         let mut hash = 0u64;
+        hash = hash.wrapping_add((self.preset as u64).wrapping_mul(29));
         hash = hash.wrapping_add((self.trunk_height.to_bits() as u64).wrapping_mul(31));
         hash = hash.wrapping_add((self.trunk_radius.to_bits() as u64).wrapping_mul(37));
         hash = hash.wrapping_add((self.radial_segments as u64).wrapping_mul(41));
@@ -186,7 +335,25 @@ impl PixyTree {
         hash = hash.wrapping_add((self.branch_recursion as u64).wrapping_mul(97));
         hash = hash.wrapping_add((self.sub_branch_count as u64).wrapping_mul(101));
         hash = hash.wrapping_add((self.sub_branch_scale.to_bits() as u64).wrapping_mul(103));
-        hash = hash.wrapping_add((self.seed as u64).wrapping_mul(107));
+        hash = hash.wrapping_add((self.crown_shape as u64).wrapping_mul(109));
+        hash = hash.wrapping_add((self.crown_influence.to_bits() as u64).wrapping_mul(113));
+        hash = hash.wrapping_add((self.seed as u64).wrapping_mul(127));
+        // Foliage parameters
+        hash = hash.wrapping_add((self.foliage_enabled as u64).wrapping_mul(131));
+        hash = hash.wrapping_add((self.leaf_style as u64).wrapping_mul(137));
+        hash = hash.wrapping_add((self.foliage_placement as u64).wrapping_mul(139));
+        hash = hash.wrapping_add((self.leaf_orientation as u64).wrapping_mul(149));
+        hash = hash.wrapping_add((self.foliage_density.to_bits() as u64).wrapping_mul(151));
+        hash = hash.wrapping_add((self.cluster_size as u64).wrapping_mul(157));
+        hash = hash.wrapping_add((self.leaf_size.to_bits() as u64).wrapping_mul(163));
+        hash = hash.wrapping_add((self.leaf_size_variation.to_bits() as u64).wrapping_mul(167));
+        hash =
+            hash.wrapping_add((self.foliage_radius_threshold.to_bits() as u64).wrapping_mul(173));
+        hash = hash.wrapping_add((self.foliage_height_falloff.to_bits() as u64).wrapping_mul(179));
+        hash = hash.wrapping_add((self.leaf_droop.to_bits() as u64).wrapping_mul(181));
+        hash = hash.wrapping_add((self.leaf_rotation_variation.to_bits() as u64).wrapping_mul(191));
+        hash = hash.wrapping_add((self.use_crown_foliage_density as u64).wrapping_mul(193));
+        hash = hash.wrapping_add((self.separate_foliage_mesh as u64).wrapping_mul(197));
         hash
     }
 
@@ -204,20 +371,26 @@ impl PixyTree {
         let primary_branches = generate_branch_origins(&config, &mut rng);
         let branch_segments = (self.radial_segments / 2).max(4);
 
+        // Collect all branches for foliage generation
+        let mut all_branches: Vec<BranchSegment> = Vec::new();
+
         for branch in &primary_branches {
             // Add primary branch mesh
             let branch_mesh = generate_branch_mesh(branch, branch_segments);
             mesh_data.extend(&branch_mesh);
+
+            all_branches.push(branch.clone());
 
             // Add sub-branches recursively
             let sub_branches = generate_sub_branches(branch, &config, &mut rng, 0);
             for sub in &sub_branches {
                 let sub_mesh = generate_branch_mesh(sub, 4); // fewer segments for sub-branches
                 mesh_data.extend(&sub_mesh);
+                all_branches.push(sub.clone());
             }
         }
 
-        // 3. Build final mesh
+        // 3. Build final trunk/branch mesh
         let mesh = self.build_array_mesh(
             mesh_data.vertices,
             mesh_data.normals,
@@ -226,11 +399,45 @@ impl PixyTree {
         );
         self.apply_mesh(mesh);
 
-        // 4. Emit signal with tree dimensions for camera framing
+        // 4. Generate foliage
+        if self.foliage_enabled {
+            let foliage_config = self.create_foliage_config();
+            let branch_infos = self.branches_to_branch_infos(&all_branches);
+            let leaves = collect_leaf_points(&branch_infos, &foliage_config, &mut rng);
+
+            if !leaves.is_empty() {
+                let foliage_mesh_data = generate_foliage_mesh(&leaves, self.leaf_style);
+
+                if self.separate_foliage_mesh {
+                    // Create separate mesh instance for foliage
+                    let foliage_mesh = self.build_array_mesh(
+                        foliage_mesh_data.vertices,
+                        foliage_mesh_data.normals,
+                        foliage_mesh_data.uvs,
+                        foliage_mesh_data.indices,
+                    );
+                    self.apply_foliage_mesh(foliage_mesh);
+                } else {
+                    // Would need to rebuild trunk mesh with foliage combined
+                    // For now, just create separate mesh anyway
+                    let foliage_mesh = self.build_array_mesh(
+                        foliage_mesh_data.vertices,
+                        foliage_mesh_data.normals,
+                        foliage_mesh_data.uvs,
+                        foliage_mesh_data.indices,
+                    );
+                    self.apply_foliage_mesh(foliage_mesh);
+                }
+            }
+        }
+
+        // 5. Emit signal with tree dimensions for camera framing
         let height = self.trunk_height;
         let radius = self.trunk_radius;
-        self.base_mut()
-            .emit_signal("tree_generated", &[height.to_variant(), radius.to_variant()]);
+        self.base_mut().emit_signal(
+            "tree_generated",
+            &[height.to_variant(), radius.to_variant()],
+        );
     }
 
     fn create_branch_config(&self) -> BranchConfig {
@@ -251,7 +458,49 @@ impl PixyTree {
             sub_branch_count: self.sub_branch_count,
             sub_branch_scale: self.sub_branch_scale,
             radial_segments: self.radial_segments,
+            crown_shape: self.crown_shape,
+            crown_influence: self.crown_influence,
         }
+    }
+
+    fn create_foliage_config(&self) -> FoliageConfig {
+        FoliageConfig {
+            enabled: self.foliage_enabled,
+            leaf_style: self.leaf_style,
+            placement: self.foliage_placement,
+            orientation: self.leaf_orientation,
+            density: self.foliage_density,
+            cluster_size: self.cluster_size,
+            leaf_size: self.leaf_size,
+            leaf_size_variation: self.leaf_size_variation,
+            radius_threshold: self.foliage_radius_threshold,
+            height_falloff: self.foliage_height_falloff,
+            leaf_droop: self.leaf_droop,
+            rotation_variation: self.leaf_rotation_variation,
+            use_crown_density: self.use_crown_foliage_density,
+            trunk_height: self.trunk_height,
+            branch_start: self.branch_start,
+            branch_end: self.branch_end,
+        }
+    }
+
+    fn branches_to_branch_infos(&self, branches: &[BranchSegment]) -> Vec<BranchInfo> {
+        branches
+            .iter()
+            .map(|b| {
+                let end = b.start + b.direction * b.length;
+                BranchInfo {
+                    start: b.start,
+                    end,
+                    direction: b.direction,
+                    length: b.length,
+                    base_radius: b.base_radius,
+                    tip_radius: b.tip_radius,
+                    is_terminal: b.is_terminal,
+                    height_ratio: b.height_ratio,
+                }
+            })
+            .collect()
     }
 
     #[func]
@@ -262,6 +511,13 @@ impl PixyTree {
             }
         }
         self.mesh_instance = None;
+
+        if let Some(ref mut instance) = self.foliage_mesh_instance {
+            if instance.is_instance_valid() {
+                instance.queue_free();
+            }
+        }
+        self.foliage_mesh_instance = None;
     }
 
     fn create_trunk_mesh_data(&self) -> MeshData {
@@ -281,7 +537,8 @@ impl PixyTree {
                 let z = angle.sin() * self.trunk_radius;
 
                 mesh.vertices.push(Vector3::new(x, y, z));
-                mesh.normals.push(Vector3::new(angle.cos(), 0.0, angle.sin()));
+                mesh.normals
+                    .push(Vector3::new(angle.cos(), 0.0, angle.sin()));
                 mesh.uvs.push(Vector2::new(seg as f32 / segments as f32, v));
             }
         }
@@ -325,12 +582,14 @@ impl PixyTree {
         for seg in 0..segments {
             let current = bottom_ring_start + seg as i32;
             let next = bottom_ring_start + (seg + 1) as i32;
-            mesh.indices.extend_from_slice(&[bottom_center_idx, next, current]);
+            mesh.indices
+                .extend_from_slice(&[bottom_center_idx, next, current]);
         }
 
         // Add top cap
         let top_center_idx = mesh.vertices.len() as i32;
-        mesh.vertices.push(Vector3::new(0.0, self.trunk_height, 0.0));
+        mesh.vertices
+            .push(Vector3::new(0.0, self.trunk_height, 0.0));
         mesh.normals.push(Vector3::new(0.0, 1.0, 0.0));
         mesh.uvs.push(Vector2::new(0.5, 0.5));
 
@@ -352,7 +611,8 @@ impl PixyTree {
         for seg in 0..segments {
             let current = top_ring_start + seg as i32;
             let next = top_ring_start + (seg + 1) as i32;
-            mesh.indices.extend_from_slice(&[top_center_idx, current, next]);
+            mesh.indices
+                .extend_from_slice(&[top_center_idx, current, next]);
         }
 
         mesh
@@ -394,5 +654,31 @@ impl PixyTree {
 
         self.base_mut().add_child(&instance);
         self.mesh_instance = Some(instance);
+    }
+
+    fn apply_foliage_mesh(&mut self, mesh: Gd<ArrayMesh>) {
+        let mut instance = MeshInstance3D::new_alloc();
+        instance.set_mesh(&mesh);
+        instance.set_name("FoliageMesh");
+
+        self.base_mut().add_child(&instance);
+        self.foliage_mesh_instance = Some(instance);
+    }
+
+    fn apply_foliage_preset_values(&mut self, values: &FoliagePresetValues) {
+        self.foliage_enabled = values.enabled;
+        self.leaf_style = values.leaf_style;
+        self.foliage_placement = values.placement;
+        self.leaf_orientation = values.orientation;
+        self.foliage_density = values.density;
+        self.cluster_size = values.cluster_size;
+        self.leaf_size = values.leaf_size;
+        self.leaf_size_variation = values.leaf_size_variation;
+        self.foliage_radius_threshold = values.radius_threshold;
+        self.foliage_height_falloff = values.height_falloff;
+        self.leaf_droop = values.leaf_droop;
+        self.leaf_rotation_variation = values.rotation_variation;
+        self.use_crown_foliage_density = values.use_crown_density;
+        self.separate_foliage_mesh = values.separate_mesh;
     }
 }

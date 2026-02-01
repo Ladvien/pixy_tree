@@ -1,6 +1,8 @@
 use godot::prelude::*;
 use std::f32::consts::TAU;
 
+use crate::crown_shape::CrownShape;
+
 /// Accumulated mesh data for combining trunk + branches
 #[derive(Default, Clone)]
 pub struct MeshData {
@@ -40,6 +42,10 @@ pub struct BranchSegment {
     pub tip_radius: f32,
     #[allow(dead_code)] // Used for future LOD/detail variation
     pub depth: u8,
+    /// Whether this branch has no sub-branches (is a terminal/leaf branch)
+    pub is_terminal: bool,
+    /// Height ratio within crown (0.0 at branch_start, 1.0 at branch_end)
+    pub height_ratio: f32,
 }
 
 /// Configuration for branch generation (extracted from PixyTree exports)
@@ -61,6 +67,8 @@ pub struct BranchConfig {
     pub sub_branch_scale: f32,
     #[allow(dead_code)] // Available for future LOD control
     pub radial_segments: i32,
+    pub crown_shape: CrownShape,
+    pub crown_influence: f32,
 }
 
 /// Xorshift64 RNG for deterministic generation
@@ -178,7 +186,15 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         // Calculate radii
         let base_radius = trunk_r * config.branch_radius_ratio;
         let tip_radius = base_radius * (1.0 - config.branch_taper);
-        let length = config.trunk_height * config.branch_length * rng.range(0.7, 1.0);
+
+        // Apply crown shape envelope
+        let height_ratio = (height - start_height) / zone_length;
+        let shape_mult = config.crown_shape.get_length_multiplier(height_ratio);
+        let final_mult = lerp(1.0, shape_mult, config.crown_influence);
+        let length = config.trunk_height * config.branch_length * final_mult * rng.range(0.7, 1.0);
+
+        // Determine if this branch will be terminal (no sub-branches)
+        let is_terminal = config.branch_recursion == 0 || config.sub_branch_count == 0;
 
         branches.push(BranchSegment {
             start,
@@ -187,6 +203,8 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             base_radius,
             tip_radius,
             depth: 0,
+            is_terminal,
+            height_ratio,
         });
     }
 
@@ -220,13 +238,15 @@ pub fn generate_sub_branches(
         let perp2 = parent.direction.cross(perp);
         let offset = perp * rotation.cos() + perp2 * rotation.sin();
 
-        let direction =
-            (parent.direction * spread.cos() + offset * spread.sin()).normalized();
+        let direction = (parent.direction * spread.cos() + offset * spread.sin()).normalized();
 
         // Scale down
         let length = parent.length * config.sub_branch_scale;
         let base_radius = parent.tip_radius * config.branch_radius_ratio;
         let tip_radius = base_radius * (1.0 - config.branch_taper);
+
+        // Check if this will be a terminal branch (no further recursion)
+        let is_terminal = depth + 1 >= config.branch_recursion;
 
         let segment = BranchSegment {
             start,
@@ -235,12 +255,23 @@ pub fn generate_sub_branches(
             base_radius,
             tip_radius,
             depth: (depth + 1) as u8,
+            is_terminal,
+            height_ratio: parent.height_ratio, // Inherit parent's height ratio
         };
 
-        branches.push(segment.clone());
+        // If we're going to recurse, mark parent as non-terminal
+        let mut final_segment = segment.clone();
 
         // Recurse
-        branches.extend(generate_sub_branches(&segment, config, rng, depth + 1));
+        let sub_branches = generate_sub_branches(&segment, config, rng, depth + 1);
+
+        // If we generated sub-branches, this segment is not terminal
+        if !sub_branches.is_empty() {
+            final_segment.is_terminal = false;
+        }
+
+        branches.push(final_segment);
+        branches.extend(sub_branches);
     }
 
     branches

@@ -192,11 +192,7 @@ impl PixyTreePlugin {
             if let Ok(node3d) = tree_clone.try_cast::<Node3D>() {
                 let pos = node3d.get_global_position();
                 // Get trunk_height from the tree
-                let height: f32 = tree
-                    .clone()
-                    .get("trunk_height")
-                    .try_to()
-                    .unwrap_or(5.0);
+                let height: f32 = tree.clone().get("trunk_height").try_to().unwrap_or(5.0);
                 (pos, height)
             } else {
                 return;
