@@ -2,6 +2,7 @@ use godot::prelude::*;
 
 use crate::crown_shape::CrownShape;
 use crate::foliage::FoliagePresetValues;
+use crate::tree::TrunkTermination;
 
 /// Pre-configured tree presets for common tree types
 #[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
@@ -27,6 +28,21 @@ pub struct TreePresetValues {
     pub radial_segments: i32,
     pub height_segments: i32,
 
+    // Trunk Taper
+    pub trunk_taper: f32,
+    pub trunk_taper_curve: f32,
+    pub trunk_flare: f32,
+    pub trunk_randomness: f32,
+    pub root_flare_count: i32,
+    pub root_flare_spread: f32,
+    pub root_flare_height: f32,
+
+    // Trunk Termination
+    pub trunk_termination: TrunkTermination,
+    pub leader_length: f32,
+    pub leader_taper: f32,
+    pub leader_has_branches: bool,
+
     // Branch
     pub branch_start: f32,
     pub branch_end: f32,
@@ -41,10 +57,42 @@ pub struct TreePresetValues {
     pub branch_recursion: i32,
     pub sub_branch_count: i32,
     pub sub_branch_scale: f32,
+    pub branch_length_variation: f32,
+    pub sub_branch_position_bias: f32,
+    pub apical_dominance: f32,
+    pub branch_flatness: f32,
+    pub branch_angle_curve: f32,
+    pub crown_angle_variation: f32,
+
+    // Twist
+    pub trunk_twist: f32,
+    pub branch_twist: f32,
+
+    // Gravity
+    pub gravity_strength: f32,
+    pub stiffness: f32,
+
+    // Branch Randomness
+    pub break_chance: f32,
+
+    // Splitting
+    pub split_enabled: bool,
+    pub split_probability: f32,
+    pub split_angle: f32,
+    pub split_position: f32,
+    pub split_radius_threshold: f32,
+
+    // Branch Collar
+    pub branch_collar_enabled: bool,
+    pub branch_collar_length: f32,
 
     // Crown
     pub crown_shape: CrownShape,
     pub crown_influence: f32,
+
+    // Materials
+    pub trunk_color: Color,
+    pub foliage_color: Color,
 
     // Foliage
     pub foliage: Option<FoliagePresetValues>,
@@ -74,6 +122,17 @@ impl TreePresetValues {
             trunk_radius: 0.6,
             radial_segments: 8,
             height_segments: 4,
+            trunk_taper: 0.3,
+            trunk_taper_curve: 0.5,
+            trunk_flare: 1.2,
+            trunk_randomness: 0.05,
+            root_flare_count: 5,
+            root_flare_spread: 0.6,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.1,
+            leader_taper: 0.15,
+            leader_has_branches: true,
             branch_start: 0.35,
             branch_end: 0.85,
             branch_density: 1.2,
@@ -87,8 +146,28 @@ impl TreePresetValues {
             branch_recursion: 2,
             sub_branch_count: 3,
             sub_branch_scale: 0.55,
+            branch_length_variation: 0.2,
+            sub_branch_position_bias: 0.2,
+            apical_dominance: 0.3,
+            branch_flatness: 0.3,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: -0.2, // Lower branches spread horizontally
+            trunk_twist: 15.0,
+            branch_twist: 10.0,
+            gravity_strength: 0.1,
+            stiffness: 0.6,
+            break_chance: 0.05,
+            split_enabled: true,
+            split_probability: 0.3,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.9,
+            trunk_color: Color::from_rgb(0.365, 0.227, 0.102), // #5D3A1A Dark Brown
+            foliage_color: Color::from_rgb(0.176, 0.314, 0.086), // #2D5016 Dark Green
             foliage: Some(FoliagePresetValues::oak()),
         }
     }
@@ -100,6 +179,17 @@ impl TreePresetValues {
             trunk_radius: 0.4,
             radial_segments: 8,
             height_segments: 5,
+            trunk_taper: 0.1,
+            trunk_taper_curve: 0.7,
+            trunk_flare: 1.1,
+            trunk_randomness: 0.0,
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.2,
+            leader_taper: 0.05,
+            leader_has_branches: false,
             branch_start: 0.15,
             branch_end: 0.95,
             branch_density: 1.8,
@@ -113,8 +203,28 @@ impl TreePresetValues {
             branch_recursion: 1,
             sub_branch_count: 2,
             sub_branch_scale: 0.4,
+            branch_length_variation: 0.1,
+            sub_branch_position_bias: 0.0,
+            apical_dominance: 0.8,
+            branch_flatness: 0.0,
+            branch_angle_curve: 0.3,
+            crown_angle_variation: 0.3, // Lower branches steeper, upper droopy
+            trunk_twist: 0.0,
+            branch_twist: 5.0,
+            gravity_strength: 0.05,
+            stiffness: 0.8,
+            break_chance: 0.0,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.08,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
+            trunk_color: Color::from_rgb(0.420, 0.267, 0.137), // #6B4423 Reddish Brown
+            foliage_color: Color::from_rgb(0.106, 0.302, 0.243), // #1B4D3E Pine Green
             foliage: Some(FoliagePresetValues::pine()),
         }
     }
@@ -126,6 +236,17 @@ impl TreePresetValues {
             trunk_radius: 0.5,
             radial_segments: 8,
             height_segments: 4,
+            trunk_taper: 0.4,
+            trunk_taper_curve: 0.4,
+            trunk_flare: 1.0,
+            trunk_randomness: 0.1,
+            root_flare_count: 4,
+            root_flare_spread: 0.4,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.15,
+            leader_taper: 0.1,
+            leader_has_branches: false,
             branch_start: 0.4,
             branch_end: 0.9,
             branch_density: 1.5,
@@ -139,8 +260,28 @@ impl TreePresetValues {
             branch_recursion: 2,
             sub_branch_count: 3,
             sub_branch_scale: 0.6,
+            branch_length_variation: 0.25,
+            sub_branch_position_bias: 0.3,
+            apical_dominance: 0.2,
+            branch_flatness: 0.2,
+            branch_angle_curve: -0.4,
+            crown_angle_variation: -0.3, // Strong horizontal spread at bottom
+            trunk_twist: 10.0,
+            branch_twist: 15.0,
+            gravity_strength: 0.4,
+            stiffness: 0.2,
+            break_chance: 0.0,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.05,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.8,
+            trunk_color: Color::from_rgb(0.478, 0.361, 0.239), // #7A5C3D Grayish Brown
+            foliage_color: Color::from_rgb(0.565, 0.690, 0.376), // #90B060 Yellow-Green
             foliage: Some(FoliagePresetValues::willow()),
         }
     }
@@ -152,6 +293,17 @@ impl TreePresetValues {
             trunk_radius: 0.3,
             radial_segments: 6,
             height_segments: 5,
+            trunk_taper: 0.2,
+            trunk_taper_curve: 0.5,
+            trunk_flare: 1.0,
+            trunk_randomness: 0.15,
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.15,
+            leader_taper: 0.1,
+            leader_has_branches: false,
             branch_start: 0.4,
             branch_end: 0.95,
             branch_density: 1.0,
@@ -165,8 +317,28 @@ impl TreePresetValues {
             branch_recursion: 1,
             sub_branch_count: 2,
             sub_branch_scale: 0.5,
+            branch_length_variation: 0.15,
+            sub_branch_position_bias: 0.1,
+            apical_dominance: 0.6,
+            branch_flatness: 0.1,
+            branch_angle_curve: 0.2,
+            crown_angle_variation: 0.1, // Slight vertical bias at bottom
+            trunk_twist: 5.0,
+            branch_twist: 8.0,
+            gravity_strength: 0.05,
+            stiffness: 0.7,
+            break_chance: 0.1,
+            split_enabled: true,
+            split_probability: 0.2,
+            split_angle: 25.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.05,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::TaperedCylindrical,
             crown_influence: 0.7,
+            trunk_color: Color::from_rgb(0.961, 0.961, 0.863), // #F5F5DC Beige/White
+            foliage_color: Color::from_rgb(0.486, 0.804, 0.486), // #7CCD7C Light Green
             foliage: Some(FoliagePresetValues::birch()),
         }
     }
@@ -178,6 +350,17 @@ impl TreePresetValues {
             trunk_radius: 0.35,
             radial_segments: 8,
             height_segments: 6,
+            trunk_taper: 0.5,
+            trunk_taper_curve: 0.3,
+            trunk_flare: 1.3,
+            trunk_randomness: 0.0,
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.15,
+            leader_taper: 0.1,
+            leader_has_branches: false,
             branch_start: 0.85,
             branch_end: 0.98,
             branch_density: 2.5,
@@ -191,8 +374,28 @@ impl TreePresetValues {
             branch_recursion: 0,
             sub_branch_count: 0,
             sub_branch_scale: 0.5,
+            branch_length_variation: 0.1,
+            sub_branch_position_bias: 0.0,
+            apical_dominance: 0.9,
+            branch_flatness: 0.0,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: 0.0, // All branches same angle
+            trunk_twist: 0.0,
+            branch_twist: 0.0,
+            gravity_strength: 0.15,
+            stiffness: 0.5,
+            break_chance: 0.0,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::Cylindrical,
             crown_influence: 0.5,
+            trunk_color: Color::from_rgb(0.545, 0.451, 0.333), // #8B7355 Tan Brown
+            foliage_color: Color::from_rgb(0.133, 0.545, 0.133), // #228B22 Forest Green
             foliage: Some(FoliagePresetValues::palm()),
         }
     }
@@ -204,6 +407,17 @@ impl TreePresetValues {
             trunk_radius: 0.4,
             radial_segments: 8,
             height_segments: 6,
+            trunk_taper: 0.15,
+            trunk_taper_curve: 0.6,
+            trunk_flare: 1.0,
+            trunk_randomness: 0.0,
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::PointedTip,
+            leader_length: 0.15,
+            leader_taper: 0.1,
+            leader_has_branches: false,
             branch_start: 0.1,
             branch_end: 0.95,
             branch_density: 2.0,
@@ -217,8 +431,28 @@ impl TreePresetValues {
             branch_recursion: 1,
             sub_branch_count: 2,
             sub_branch_scale: 0.4,
+            branch_length_variation: 0.05,
+            sub_branch_position_bias: -0.2,
+            apical_dominance: 0.9,
+            branch_flatness: 0.0,
+            branch_angle_curve: 0.5,
+            crown_angle_variation: 0.4, // Strong vertical bias at bottom
+            trunk_twist: 5.0,
+            branch_twist: 3.0,
+            gravity_strength: 0.0,
+            stiffness: 0.9,
+            break_chance: 0.0,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::Flame,
             crown_influence: 1.0,
+            trunk_color: Color::from_rgb(0.290, 0.235, 0.165), // #4A3C2A Dark Olive
+            foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
             foliage: Some(FoliagePresetValues::cypress()),
         }
     }
@@ -230,6 +464,17 @@ impl TreePresetValues {
             trunk_radius: 0.25,
             radial_segments: 8,
             height_segments: 3,
+            trunk_taper: 0.25,
+            trunk_taper_curve: 0.4,
+            trunk_flare: 1.4,
+            trunk_randomness: 0.25,
+            root_flare_count: 3,
+            root_flare_spread: 0.8,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.15,
+            leader_taper: 0.1,
+            leader_has_branches: false,
             branch_start: 0.3,
             branch_end: 0.8,
             branch_density: 0.8,
@@ -243,8 +488,28 @@ impl TreePresetValues {
             branch_recursion: 2,
             sub_branch_count: 2,
             sub_branch_scale: 0.6,
+            branch_length_variation: 0.3,
+            sub_branch_position_bias: 0.4,
+            apical_dominance: 0.4,
+            branch_flatness: 0.4,
+            branch_angle_curve: -0.2,
+            crown_angle_variation: -0.1, // Slight horizontal spread
+            trunk_twist: 30.0,
+            branch_twist: 20.0,
+            gravity_strength: 0.15,
+            stiffness: 0.4,
+            break_chance: 0.1,
+            split_enabled: true,
+            split_probability: 0.4,
+            split_angle: 35.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.06,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.6,
+            trunk_color: Color::from_rgb(0.361, 0.251, 0.200), // #5C4033 Dark Brown
+            foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
             foliage: Some(FoliagePresetValues::bonsai()),
         }
     }

@@ -546,6 +546,7 @@ pub struct FoliagePresetValues {
     pub rotation_variation: f32,
     pub use_crown_density: bool,
     pub separate_mesh: bool,
+    pub foliage_color: Color,
 }
 
 impl Default for FoliagePresetValues {
@@ -565,6 +566,7 @@ impl Default for FoliagePresetValues {
             rotation_variation: 0.5,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.133, 0.545, 0.133), // #228B22 Forest Green
         }
     }
 }
@@ -587,6 +589,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.6,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.176, 0.314, 0.086), // #2D5016 Dark Green
         }
     }
 
@@ -607,6 +610,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.3,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.106, 0.302, 0.243), // #1B4D3E Pine Green
         }
     }
 
@@ -627,6 +631,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.8,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.565, 0.690, 0.376), // #90B060 Yellow-Green
         }
     }
 
@@ -647,6 +652,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.5,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.486, 0.804, 0.486), // #7CCD7C Light Green
         }
     }
 
@@ -667,6 +673,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.2,
             use_crown_density: false,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.133, 0.545, 0.133), // #228B22 Forest Green
         }
     }
 
@@ -687,6 +694,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.4,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
         }
     }
 
@@ -707,6 +715,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.7,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
         }
     }
 }

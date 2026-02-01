@@ -4,6 +4,8 @@ mod branch;
 mod crown_shape;
 mod editor_plugin;
 mod foliage;
+mod junction;
+mod smoothing;
 mod tree;
 mod tree_preset;
 
