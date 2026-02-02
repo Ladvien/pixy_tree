@@ -546,6 +546,7 @@ pub struct FoliagePresetValues {
     pub rotation_variation: f32,
     pub use_crown_density: bool,
     pub separate_mesh: bool,
+    pub foliage_color: Color,
 }
 
 impl Default for FoliagePresetValues {
@@ -565,6 +566,7 @@ impl Default for FoliagePresetValues {
             rotation_variation: 0.5,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.133, 0.545, 0.133), // #228B22 Forest Green
         }
     }
 }
@@ -587,6 +589,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.6,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.176, 0.314, 0.086), // #2D5016 Dark Green
         }
     }
 
@@ -607,6 +610,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.3,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.106, 0.302, 0.243), // #1B4D3E Pine Green
         }
     }
 
@@ -627,6 +631,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.8,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.565, 0.690, 0.376), // #90B060 Yellow-Green
         }
     }
 
@@ -647,6 +652,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.5,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.486, 0.804, 0.486), // #7CCD7C Light Green
         }
     }
 
@@ -667,6 +673,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.2,
             use_crown_density: false,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.133, 0.545, 0.133), // #228B22 Forest Green
         }
     }
 
@@ -687,6 +694,7 @@ impl FoliagePresetValues {
             rotation_variation: 0.4,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
         }
     }
 
@@ -707,6 +715,154 @@ impl FoliagePresetValues {
             rotation_variation: 0.7,
             use_crown_density: true,
             separate_mesh: true,
+            foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
+        }
+    }
+
+    /// Maple: Dense crossed planes, radial outward, medium leaves
+    pub fn maple() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RadialOutward,
+            density: 4.5,
+            cluster_size: 5,
+            leaf_size: 0.3,
+            leaf_size_variation: 0.2,
+            radius_threshold: 0.18,
+            height_falloff: 0.25,
+            leaf_droop: 0.12,
+            rotation_variation: 0.6,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.133, 0.322, 0.133), // Forest green
+        }
+    }
+
+    /// Spruce: Needle clusters, follow branch, high density
+    pub fn spruce() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 5.5,
+            cluster_size: 7,
+            leaf_size: 0.22,
+            leaf_size_variation: 0.08,
+            radius_threshold: 0.22,
+            height_falloff: 0.18,
+            leaf_droop: 0.08,
+            rotation_variation: 0.25,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.086, 0.278, 0.212), // Blue-green
+        }
+    }
+
+    /// Poplar: Crossed planes, terminal, upward bias, small dense
+    pub fn poplar() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 3.5,
+            cluster_size: 4,
+            leaf_size: 0.22,
+            leaf_size_variation: 0.12,
+            radius_threshold: 0.15,
+            height_falloff: 0.3,
+            leaf_droop: 0.05,
+            rotation_variation: 0.45,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.404, 0.545, 0.306), // Yellow-green
+        }
+    }
+
+    /// Baobab: Cluster sphere, sparse, large leaves
+    pub fn baobab() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::ClusterSphere,
+            placement: FoliagePlacement::TipClusters,
+            orientation: LeafOrientation::RadialOutward,
+            density: 2.0,
+            cluster_size: 5,
+            leaf_size: 0.4,
+            leaf_size_variation: 0.25,
+            radius_threshold: 0.25,
+            height_falloff: 0.15,
+            leaf_droop: 0.2,
+            rotation_variation: 0.5,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.306, 0.463, 0.235), // Olive green
+        }
+    }
+
+    /// Dragon Tree: Star burst, tip clusters at fork points
+    pub fn dragon_tree() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::StarBurst,
+            placement: FoliagePlacement::TipClusters,
+            orientation: LeafOrientation::RadialOutward,
+            density: 3.0,
+            cluster_size: 8,
+            leaf_size: 0.35,
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.2,
+            height_falloff: 0.1,
+            leaf_droop: 0.1,
+            rotation_variation: 0.4,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.286, 0.443, 0.255), // Blue-green
+        }
+    }
+
+    /// Japanese Maple: Crossed planes, all branches, layered, red foliage
+    pub fn japanese_maple() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::HorizontalSpread,
+            density: 4.0,
+            cluster_size: 4,
+            leaf_size: 0.18,
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.12,
+            height_falloff: 0.35,
+            leaf_droop: 0.18,
+            rotation_variation: 0.65,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.698, 0.133, 0.133), // Red foliage
+        }
+    }
+
+    /// Redwood: Needle clusters, sparse, small
+    pub fn redwood() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 3.0,
+            cluster_size: 5,
+            leaf_size: 0.18,
+            leaf_size_variation: 0.1,
+            radius_threshold: 0.15,
+            height_falloff: 0.25,
+            leaf_droop: 0.1,
+            rotation_variation: 0.3,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.12, 0.32, 0.21), // Dark green
         }
     }
 }
