@@ -14,6 +14,7 @@ pub enum CrownShape {
     Flame = 5,
     InverseConical = 6,
     TendFlame = 7,
+    Spreading = 8, // Widest at ~40% height, gradual taper - for JapaneseMaple, Oak variants
 }
 
 impl CrownShape {
@@ -58,6 +59,20 @@ impl CrownShape {
                 } else {
                     let falloff = (t - peak) / (1.0 - peak);
                     1.0 - 0.6 * falloff * falloff
+                }
+            }
+
+            // Spreading - widest at 40% height, gradual taper above and below
+            // Good for Japanese Maple, ornamental trees with layered horizontal branches
+            CrownShape::Spreading => {
+                let peak = 0.4;
+                if t < peak {
+                    // Gradual increase to peak
+                    0.5 + 0.5 * (t / peak)
+                } else {
+                    // Gentle taper after peak
+                    let falloff = (t - peak) / (1.0 - peak);
+                    1.0 - 0.4 * falloff
                 }
             }
         }
@@ -134,5 +149,22 @@ mod tests {
             shape.get_length_multiplier(1.5),
             shape.get_length_multiplier(1.0)
         );
+    }
+
+    #[test]
+    fn test_spreading_peaks_at_40_percent() {
+        let shape = CrownShape::Spreading;
+        let at_peak = shape.get_length_multiplier(0.4);
+        let before_peak = shape.get_length_multiplier(0.2);
+        let after_peak = shape.get_length_multiplier(0.7);
+        let at_top = shape.get_length_multiplier(1.0);
+
+        // Peak should be at 0.4
+        assert!(at_peak > before_peak);
+        assert!(at_peak > after_peak);
+        // Should taper toward top
+        assert!(after_peak > at_top);
+        // Peak value should be 1.0
+        assert!((at_peak - 1.0).abs() < 0.001);
     }
 }
