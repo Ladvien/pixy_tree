@@ -11,7 +11,7 @@
 //!   and cutting holes where side branches attach.
 
 use godot::prelude::*;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 use crate::branch::{BranchSegment, MeshData};
 
@@ -55,7 +55,7 @@ impl BranchNode {
 #[derive(Clone, Debug)]
 struct CircleDesignator {
     vertex_index: usize,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used for UV offset tracking, read indirectly via struct patterns
     uv_index: usize,
     radial_n: usize,
 }
@@ -83,6 +83,10 @@ pub struct ManifoldMeshData {
     pub custom0: Vec<[f32; 4]>,
     /// Per-vertex: [pivot_x, pivot_y, pivot_z, 0.0]
     pub custom1: Vec<[f32; 4]>,
+    /// Per-vertex branch direction (for direction-based shaders)
+    pub directions: Vec<Vector3>,
+    /// L4: Per-vertex radius (for radius-based shaders)
+    pub radii: Vec<f32>,
     /// Separate UV tracking (ManifoldMesher generates UVs separately from vertices)
     uv_list: Vec<Vector2>,
 }
@@ -100,6 +104,15 @@ impl ManifoldMeshData {
         self.mesh.smooth_weights.push(1.0);
         self.custom0.push([0.0; 4]);
         self.custom1.push([0.0; 4]);
+        self.directions.push(Vector3::UP);
+        self.radii.push(0.0); // L4: Default radius, will be set by caller
+        idx
+    }
+
+    /// Add a vertex with radius and return its index (L4)
+    fn add_vertex_with_radius(&mut self, position: Vector3, radius: f32) -> usize {
+        let idx = self.add_vertex(position);
+        self.radii[idx] = radius;
         idx
     }
 
@@ -144,25 +157,69 @@ pub fn segments_to_tree(segments: &[BranchSegment]) -> Vec<BranchNode> {
     let mut parent_of: Vec<Option<usize>> = vec![None; segments.len()];
     let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); segments.len()];
 
+    // M6 fix: Match children to parents using closest-point-on-segment, not just endpoint
+    // This allows children to attach anywhere along the parent segment
+    let mut child_position_in_parent: Vec<f32> = vec![1.0; segments.len()];
+
     for (child_idx, child) in segments.iter().enumerate() {
+        let mut best_dist = f32::MAX;
+        let mut best_parent = None;
+        let mut best_pos = 1.0f32;
+
         for (parent_idx, parent) in segments.iter().enumerate() {
             if parent_idx == child_idx {
                 continue;
             }
-            let parent_end = parent.start + parent.direction * parent.length;
-            let distance = (child.start - parent_end).length();
-            if distance < epsilon {
-                parent_of[child_idx] = Some(parent_idx);
-                children_of[parent_idx].push(child_idx);
-                break;
+            // Project child.start onto parent segment to find closest point
+            let to_child = child.start - parent.start;
+            let along = to_child.dot(parent.direction) / parent.length;
+            let along_clamped = along.clamp(0.0, 1.0);
+            let closest_point = parent.start + parent.direction * parent.length * along_clamped;
+            let distance = (child.start - closest_point).length();
+
+            if distance < epsilon && distance < best_dist {
+                best_dist = distance;
+                best_parent = Some(parent_idx);
+                best_pos = along_clamped;
             }
+        }
+
+        if let Some(parent_idx) = best_parent {
+            parent_of[child_idx] = Some(parent_idx);
+            children_of[parent_idx].push(child_idx);
+            child_position_in_parent[child_idx] = best_pos;
         }
     }
 
-    // Build nodes bottom-up (leaves first)
-    // Sort by depth descending so we process leaves before parents
-    let mut sorted: Vec<usize> = (0..segments.len()).collect();
-    sorted.sort_by(|&a, &b| segments[b].depth.cmp(&segments[a].depth));
+    // Build nodes bottom-up (leaves first) using topological sort.
+    // This ensures children are always constructed before their parents,
+    // regardless of depth values (critical for multi-segment continuation chains).
+    let mut sorted: Vec<usize> = Vec::with_capacity(segments.len());
+    let mut processed = vec![false; segments.len()];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+    // Start with leaves (segments that have no children)
+    for i in 0..segments.len() {
+        if children_of[i].is_empty() {
+            queue.push_back(i);
+        }
+    }
+    while let Some(idx) = queue.pop_front() {
+        sorted.push(idx);
+        processed[idx] = true;
+        if let Some(parent) = parent_of[idx] {
+            // Add parent to queue once all its children are processed
+            if !processed[parent] && children_of[parent].iter().all(|&c| processed[c]) {
+                queue.push_back(parent);
+            }
+        }
+    }
+    // Add any remaining unprocessed nodes (disconnected roots)
+    for i in 0..segments.len() {
+        if !processed[i] {
+            sorted.push(i);
+        }
+    }
 
     let mut nodes: Vec<Option<BranchNode>> = vec![None; segments.len()];
 
@@ -191,7 +248,7 @@ pub fn segments_to_tree(segments: &[BranchSegment]) -> Vec<BranchNode> {
             if let Some(cont_node) = nodes[cont_idx].take() {
                 children.push(BranchNodeChild {
                     node: cont_node,
-                    position_in_parent: 1.0, // continuation attaches at end
+                    position_in_parent: child_position_in_parent[cont_idx],
                 });
             }
 
@@ -201,12 +258,10 @@ pub fn segments_to_tree(segments: &[BranchSegment]) -> Vec<BranchNode> {
                     continue;
                 }
                 if let Some(side_node) = nodes[ci].take() {
-                    // Calculate position_in_parent based on where the child attaches
-                    // For segments that attach at the parent's end, this is 1.0
-                    // (flat segment list doesn't have mid-branch attachments)
+                    // M6 fix: Use computed position_in_parent from segment projection
                     children.push(BranchNodeChild {
                         node: side_node,
-                        position_in_parent: 1.0,
+                        position_in_parent: child_position_in_parent[ci],
                     });
                 }
             }
@@ -332,7 +387,7 @@ fn add_circle(
     mesh: &mut ManifoldMeshData,
     uv_y: f32,
     pp_ctx: &PivotPainterContext,
-    pivot_painter_enabled: bool,
+    _pivot_painter_enabled: bool,
 ) -> CircleDesignator {
     let right = node.tangent;
     let vertex_index = mesh.mesh.vertices.len();
@@ -357,21 +412,22 @@ fn add_circle(
         let vertex = point * radius + circle_position;
         let idx = mesh.add_vertex(vertex);
         mesh.mesh.smooth_weights[idx] = smooth_amount;
+        mesh.radii[idx] = radius; // L4: Store per-vertex radius
 
-        if pivot_painter_enabled {
-            mesh.custom0[idx] = [
-                pp_ctx.stem_id as f32,
-                pp_ctx.hierarchy_depth as f32,
-                pp_ctx.branch_extent,
-                0.0,
-            ];
-            mesh.custom1[idx] = [
-                pp_ctx.pivot_position.x,
-                pp_ctx.pivot_position.y,
-                pp_ctx.pivot_position.z,
-                0.0,
-            ];
-        }
+        // C++ always assigns pivot painter attributes unconditionally
+        mesh.custom0[idx] = [
+            pp_ctx.stem_id as f32,
+            pp_ctx.hierarchy_depth as f32,
+            pp_ctx.branch_extent,
+            0.0,
+        ];
+        mesh.custom1[idx] = [
+            pp_ctx.pivot_position.x,
+            pp_ctx.pivot_position.y,
+            pp_ctx.pivot_position.z,
+            0.0,
+        ];
+        mesh.directions[idx] = node.direction;
 
         // UV: seam vertex (i == radial_n) gets u=1.0
         let uv_x = i as f32 / radial_n as f32;
@@ -498,8 +554,10 @@ fn add_child_base_geometry(
     offset: usize,
     smooth_amount: f32,
     mesh: &mut ManifoldMeshData,
+    child_uvs: &[Vector2],
     pp_ctx: &PivotPainterContext,
-    pivot_painter_enabled: bool,
+    _pivot_painter_enabled: bool,
+    _direction: Vector3,
 ) {
     // Calculate center of the child base polygon
     let mut child_base_center = Vector3::ZERO;
@@ -510,27 +568,55 @@ fn add_child_base_geometry(
 
     let radial_n = child_base.radial_n;
 
+    // H4: Compute junction direction from polygon cross product (actual geometry)
+    // instead of using child branch direction
+    let junction_direction = if child_base_indices.len() >= 3 {
+        let v0 = mesh.mesh.vertices[child_base_indices[0]];
+        let v1 = mesh.mesh.vertices[child_base_indices[1]];
+        let v2 = mesh.mesh.vertices[child_base_indices[2]];
+        let edge1 = v2 - v0;
+        let edge2 = v1 - v0;
+        let normal = edge1.cross(edge2);
+        if normal.length_squared() > 0.0001 {
+            normal.normalized()
+        } else {
+            _direction // Fallback to passed direction if geometry is degenerate
+        }
+    } else {
+        _direction
+    };
+
     for i in 0..radial_n {
         let index = (i + offset) % radial_n;
         let vertex = mesh.mesh.vertices[child_base_indices[index]];
         let vertex = (vertex - child_base_center).normalized() * child_radius + child_pos;
         let added_idx = mesh.add_vertex(vertex);
         mesh.mesh.smooth_weights[added_idx] = smooth_amount;
+        mesh.radii[added_idx] = child_radius; // L4: Store per-vertex radius at junction
 
-        if pivot_painter_enabled {
-            mesh.custom0[added_idx] = [
-                pp_ctx.stem_id as f32,
-                pp_ctx.hierarchy_depth as f32,
-                pp_ctx.branch_extent,
-                0.0,
-            ];
-            mesh.custom1[added_idx] = [
-                pp_ctx.pivot_position.x,
-                pp_ctx.pivot_position.y,
-                pp_ctx.pivot_position.z,
-                0.0,
-            ];
+        // M10 fix: Push UV inline with vertex to maintain 1:1 mapping
+        if i < child_uvs.len() {
+            mesh.uv_list.push(child_uvs[i]);
+        } else {
+            mesh.uv_list
+                .push(Vector2::new(i as f32 / radial_n as f32, 0.0));
         }
+
+        // C++ always assigns pivot painter attributes unconditionally
+        mesh.custom0[added_idx] = [
+            pp_ctx.stem_id as f32,
+            pp_ctx.hierarchy_depth as f32,
+            pp_ctx.branch_extent,
+            0.0,
+        ];
+        mesh.custom1[added_idx] = [
+            pp_ctx.pivot_position.x,
+            pp_ctx.pivot_position.y,
+            pp_ctx.pivot_position.z,
+            0.0,
+        ];
+        // H4: Use geometry-derived junction direction
+        mesh.directions[added_idx] = junction_direction;
 
         // Quad connecting parent ring to child ring
         let v0 = child_base_indices[index];
@@ -554,52 +640,35 @@ fn get_child_twist(child: &BranchNode, parent: &BranchNode) -> f32 {
     (sin_angle.atan2(cos_angle) + TAU) % TAU
 }
 
-/// Add UVs for child base transition region
-fn add_child_base_uvs(
+/// H5: Compute UVs for child base vertices at junction.
+///
+/// Godot requires 1:1 vertex-to-UV mapping, so we can't use C++'s per-polygon UV loops.
+/// This improved version computes UVs based on the junction's position in UV space,
+/// accounting for the parent's UV growth rate.
+///
+/// Parameters:
+/// - parent_uv_y: Current V coordinate on the parent branch
+/// - child_radial_n: Number of radial segments on child
+/// - parent_radius: Parent branch radius at junction (for UV scale)
+/// - child_radius: Child branch radius (for UV offset)
+fn compute_child_base_uvs(
     parent_uv_y: f32,
-    parent: &BranchNode,
-    child_range: &IndexRange,
     child_radial_n: usize,
-    parent_radial_n: usize,
-    mesh: &mut ManifoldMeshData,
-) -> usize {
-    let uv_growth = parent.length / (parent.radius + 0.001) / TAU;
+    parent_radius: f32,
+    child_radius: f32,
+) -> Vec<Vector2> {
+    let mut uvs = Vec::with_capacity(child_radial_n);
 
-    // Create outer UVs (two rows)
-    for i in 0..2usize {
-        let uv_y = parent_uv_y + i as f32 * uv_growth;
-        let x_start = child_range.min_index as f32 + i as f32 * (child_radial_n as f32 / 2.0 - 1.0);
-        let step = if i == 0 { 1.0f32 } else { -1.0 };
-        for j in 0..(child_radial_n / 2) {
-            let uv_x = (x_start + j as f32 * step) / parent_radial_n as f32;
-            mesh.uv_list.push(Vector2::new(uv_x, uv_y));
-        }
-    }
-
-    // Inner circle UVs
-    let uv_circle_center = Vector2::new(
-        (child_range.min_index as f32 + (child_radial_n as f32 / 4.0 - 0.5))
-            / parent_radial_n as f32,
-        parent_uv_y + uv_growth / 2.0,
-    );
-    let uv_circle_radius =
-        (child_radial_n as f32 / parent_radial_n as f32).min(uv_growth / 2.0) * 0.6;
+    // H5: Compute UV growth factor based on circumference ratio
+    // This creates a smoother UV transition at the junction
+    let uv_growth = child_radius / (parent_radius + 0.001) / std::f32::consts::TAU;
+    let base_v = parent_uv_y + uv_growth * 0.5; // Offset by half the UV growth
 
     for i in 0..child_radial_n {
-        let angle = i as f32 / (child_radial_n as f32 - 1.0) * TAU + PI;
-        let uv_pos = Vector2::new(angle.cos(), angle.sin()) * uv_circle_radius + uv_circle_center;
-        mesh.uv_list.push(uv_pos);
+        let u = i as f32 / child_radial_n as f32;
+        uvs.push(Vector2::new(u, base_v));
     }
-
-    let circle_uv_start_index = mesh.uv_list.len();
-
-    for i in 0..child_radial_n {
-        mesh.uv_list
-            .push(Vector2::new(i as f32 / child_radial_n as f32, parent_uv_y));
-    }
-    mesh.uv_list.push(Vector2::new(1.0, parent_uv_y));
-
-    circle_uv_start_index
+    uvs
 }
 
 /// Orchestrate junction creation for a side branch child.
@@ -631,20 +700,14 @@ fn add_child_circle(
         + child_radial_n as f32) as usize)
         % child_radial_n;
 
+    // H5: Compute child base UVs with improved UV scaling
+    let child_uvs = compute_child_base_uvs(uv_y, child_radial_n, parent.radius, child.node.radius);
+
     let child_base = CircleDesignator {
         vertex_index: mesh.mesh.vertices.len(),
-        uv_index: 0, // Will be set by add_child_base_uvs
+        uv_index: mesh.uv_list.len(), // Will be in sync after pushing below
         radial_n: child_radial_n,
     };
-
-    let _circle_uv_start = add_child_base_uvs(
-        uv_y,
-        parent,
-        child_range,
-        child_radial_n,
-        parent_base.radial_n,
-        mesh,
-    );
 
     add_child_base_geometry(
         &child_base_indices,
@@ -654,8 +717,10 @@ fn add_child_circle(
         offset,
         smooth_amount,
         mesh,
+        &child_uvs,
         pp_ctx,
         pivot_painter_enabled,
+        child.node.direction,
     );
 
     child_base
@@ -892,16 +957,12 @@ pub fn mesh_tree(
         );
     }
 
-    // Copy UVs to mesh — with radial_n+1 vertices per circle, UVs are now 1:1 with vertices
-    // for simple circles. Junction geometry may still have extra UVs, so copy what fits.
+    // M10 fix: UVs are now pushed inline with vertices (1:1 mapping maintained).
+    // Copy uv_list directly; pad or truncate to match vertex count as safety net.
+    mesh.mesh.uvs = mesh.uv_list.clone();
     mesh.mesh
         .uvs
         .resize(mesh.mesh.vertices.len(), Vector2::ZERO);
-    for (i, uv) in mesh.uv_list.iter().enumerate() {
-        if i < mesh.mesh.uvs.len() {
-            mesh.mesh.uvs[i] = *uv;
-        }
-    }
 
     mesh
 }
@@ -921,6 +982,7 @@ mod tests {
             depth: 0,
             is_terminal: true,
             height_ratio: 0.5,
+            subtree_weight: 1.0,
         }];
         let tree = segments_to_tree(&segments);
         assert_eq!(tree.len(), 1);
@@ -939,6 +1001,7 @@ mod tests {
                 depth: 0,
                 is_terminal: false,
                 height_ratio: 0.5,
+                subtree_weight: 1.5,
             },
             BranchSegment {
                 start: Vector3::new(0.0, 1.0, 0.0),
@@ -949,6 +1012,7 @@ mod tests {
                 depth: 1,
                 is_terminal: true,
                 height_ratio: 0.8,
+                subtree_weight: 0.5,
             },
         ];
         let tree = segments_to_tree(&segments);

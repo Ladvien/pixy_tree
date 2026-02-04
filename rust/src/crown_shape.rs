@@ -2,6 +2,12 @@ use godot::prelude::*;
 use std::f32::consts::PI;
 
 /// Crown shape envelope that modulates branch length based on height position
+///
+/// M6 note: Ordinal values differ from C++ modular_tree (which has different enum order).
+/// However, Godot serializes enums by name (via GodotConvert), not by integer ordinal,
+/// so scene files remain compatible regardless of ordinal differences.
+/// C++ ordinals: kSpherical=0, kHemispherical=1, kCylindrical=2, kTaperedCylindrical=3,
+///               kFlame=4, kInverseConical=5, kTendFlame=6
 #[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
 #[godot(via = i64)]
 pub enum CrownShape {

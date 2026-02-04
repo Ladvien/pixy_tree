@@ -3,10 +3,8 @@
 //! Simulates biological tree growth with vigor distribution, threshold-based rules,
 //! lateral branching from dormant buds, and multi-iteration growth.
 
-use godot::prelude::*;
-use std::f32::consts::TAU;
-
 use crate::branch::{BranchSegment, SeededRng};
+use godot::prelude::*;
 
 /// Node growth state types
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +64,9 @@ impl Default for GrowthNodeInfo {
 pub struct GrowthNode {
     /// Direction of growth (normalized)
     pub direction: Vector3,
+    /// M7: Persistent tangent vector for stable phyllotaxis reference frame
+    /// This is perpendicular to direction and used for consistent branch placement
+    pub tangent: Vector3,
     /// Length of this segment
     pub length: f32,
     /// Radius at base of segment
@@ -89,11 +90,44 @@ impl GrowthNode {
         radius: f32,
         node_type: GrowthNodeType,
     ) -> Self {
+        // M7: Initialize tangent perpendicular to direction
+        let tangent = get_perpendicular(direction);
         Self {
             direction,
+            tangent,
             length,
             radius,
-            position_in_parent: 0.0,
+            position_in_parent: 1.0, // Default: attached at parent's end
+            position,
+            info: GrowthNodeInfo {
+                node_type,
+                vigor: 1.0,
+                vigor_ratio: 1.0,
+                age: 0,
+                phyllotaxis_angle: 0.0,
+                branch_weight: 0.0,
+                center_of_mass: Vector3::ZERO,
+                absolute_position: Vector3::ZERO,
+            },
+            children: Vec::new(),
+        }
+    }
+
+    /// M7: Create a new growth node with inherited tangent from parent
+    pub fn new_with_tangent(
+        position: Vector3,
+        direction: Vector3,
+        tangent: Vector3,
+        length: f32,
+        radius: f32,
+        node_type: GrowthNodeType,
+    ) -> Self {
+        Self {
+            direction,
+            tangent,
+            length,
+            radius,
+            position_in_parent: 1.0,
             position,
             info: GrowthNodeInfo {
                 node_type,
@@ -192,6 +226,8 @@ pub struct GrowthConfig {
 
     // Advanced growth parity parameters
     /// Enable dynamic cut threshold adaptation (auto-balance branch count)
+    /// Note: C++ always adapts unconditionally; this field is kept for config compat but unused.
+    #[allow(dead_code)]
     pub dynamic_cut_threshold: bool,
     /// Extension taper ratio (original: 0.95, previous: 0.8)
     pub extension_taper: f32,
@@ -211,16 +247,19 @@ pub struct GrowthConfig {
     pub split_angle: f32,
     /// Phyllotaxis angle for growth (degrees)
     pub phyllotaxis_angle: f32,
+    /// Preview iteration: -1 = run all, otherwise stop at that iteration
+    pub preview_iteration: i32,
 }
 
 impl Default for GrowthConfig {
     fn default() -> Self {
         Self {
-            grow_threshold: 0.3,
-            cut_threshold: 0.1,
+            // C++ defaults from GrowthFunction.hpp
+            grow_threshold: 0.5,
+            cut_threshold: 0.2,
             split_threshold: 0.7,
-            flower_threshold: 0.15,
-            apical_dominance: 0.5,
+            flower_threshold: 0.5,
+            apical_dominance: 0.7,
             enable_lateral: true,
             lateral_start: 0.1,
             lateral_end: 0.9,
@@ -228,26 +267,29 @@ impl Default for GrowthConfig {
             lateral_activation: 0.4,
             lateral_angle: 45.0,
             iterations: 5,
-            branch_length: 0.5,
+            branch_length: 1.0,
             gravitropism: 0.1,
-            randomness: 0.2,
-            gravity_strength: 0.0,
+            randomness: 0.1,
+            gravity_strength: 1.0,
             stiffness: 0.5,
             enable_flowering: false,
             trunk_height: 5.0,
             trunk_radius: 0.5,
             trunk_taper: 0.3,
             seed: 42,
-            dynamic_cut_threshold: false,
+            // G5: Dynamic cut threshold always active in C++
+            dynamic_cut_threshold: true,
             extension_taper: 0.95,
             split_taper: 0.9,
             lateral_radius_ratio: 0.8,
-            secondary_growth: false,
+            // G15: Secondary growth applies to all non-Ignored/Dormant nodes in C++
+            secondary_growth: true,
             competitive_vigor: true,
             trunk_resolution: 3.0,
             trunk_up_attraction: 0.6,
             split_angle: 60.0,
             phyllotaxis_angle: 137.5,
+            preview_iteration: -1,
         }
     }
 }
@@ -322,7 +364,7 @@ pub fn create_trunk_structure(config: &GrowthConfig) -> GrowthNode {
 ///   vigor_ratio_i = 1 - (t * L0) / (t * L0 + (1-t) * Li + eps)
 /// where t = apical_dominance, L0 = leader flux, Li = lateral flux.
 /// This creates strong apical dominance hierarchies.
-fn calculate_vigor_ratios(node: &mut GrowthNode, apical_dominance: f32, competitive: bool) -> f32 {
+fn calculate_vigor_ratios(node: &mut GrowthNode, apical_dominance: f32, _competitive: bool) -> f32 {
     // Base vigor request depends on node type
     let base_request = match node.info.node_type {
         GrowthNodeType::Meristem => 1.0,
@@ -339,51 +381,35 @@ fn calculate_vigor_ratios(node: &mut GrowthNode, apical_dominance: f32, competit
     // Calculate children's flux requests
     let mut child_fluxes: Vec<f32> = Vec::with_capacity(node.children.len());
     for child in &mut node.children {
-        let flux = calculate_vigor_ratios(child, apical_dominance, competitive);
+        let flux = calculate_vigor_ratios(child, apical_dominance, true);
         child_fluxes.push(flux);
     }
 
     let total_child_flux: f32 = child_fluxes.iter().sum();
 
     if total_child_flux > 0.0 {
-        if competitive && child_fluxes.len() > 1 {
-            // Competitive vigor ratio matching C++ GrowthFunction.cpp
-            // Process laterals (index 1+) accumulating light_flux
-            let t = apical_dominance;
-            let eps = 0.0001;
-            let mut light_flux = child_fluxes[0];
-            let mut last_vigor_ratio = 1.0f32;
+        // G3 fix: Match C++ exactly. The competitive formula always applies for
+        // nodes with children. For single-child nodes, the loop doesn't execute
+        // and child[0] gets vigor_ratio=1.0 (matching C++ behavior where the
+        // initial vigor_ratio=1 is never modified when there's only one child).
+        // G1 fix: Use eps=0.001 matching C++ kEpsilon
+        let t = apical_dominance;
+        let eps = 0.001;
+        let mut light_flux = child_fluxes[0];
+        let mut last_vigor_ratio = 1.0f32;
 
-            #[allow(clippy::needless_range_loop)]
-            for i in 1..node.children.len() {
-                let child_flux = child_fluxes[i];
-                let vigor_ratio =
-                    (t * light_flux) / (t * light_flux + (1.0 - t) * child_flux + eps);
-                // Lateral gets 1 - vigor_ratio
-                node.children[i].info.vigor_ratio = 1.0 - vigor_ratio;
-                last_vigor_ratio = vigor_ratio;
-                light_flux += child_flux;
-            }
-
-            // Leader (child[0]) gets the LAST vigor_ratio value
-            node.children[0].info.vigor_ratio = last_vigor_ratio;
-        } else {
-            // Simple additive dominance (original Rust behavior)
-            for (i, (child, &request)) in node
-                .children
-                .iter_mut()
-                .zip(child_fluxes.iter())
-                .enumerate()
-            {
-                let is_leader = i == 0;
-                let dominance_factor = if is_leader {
-                    1.0 + apical_dominance
-                } else {
-                    1.0 - apical_dominance * 0.5
-                };
-                child.info.vigor_ratio = (request / total_child_flux) * dominance_factor;
-            }
+        #[allow(clippy::needless_range_loop)]
+        for i in 1..node.children.len() {
+            let child_flux = child_fluxes[i];
+            let vigor_ratio = (t * light_flux) / (t * light_flux + (1.0 - t) * child_flux + eps);
+            // Lateral gets 1 - vigor_ratio
+            node.children[i].info.vigor_ratio = 1.0 - vigor_ratio;
+            last_vigor_ratio = vigor_ratio;
+            light_flux += child_flux;
         }
+
+        // Leader (child[0]) gets the LAST vigor_ratio value
+        node.children[0].info.vigor_ratio = last_vigor_ratio;
     }
 
     node.info.vigor_ratio = base_request;
@@ -453,51 +479,67 @@ fn apply_growth_rules_recursive(
             }
 
             // Check for flowering
-            if config.enable_flowering && vigor < config.flower_threshold {
+            // G26 fix: C++ requires vigor >= cut_threshold to become flower
+            // (otherwise it should be pruned, not flowered)
+            if config.enable_flowering
+                && vigor < config.flower_threshold
+                && vigor >= config.cut_threshold
+            {
                 node.info.node_type = GrowthNodeType::Flower;
                 return;
+            }
+
+            // G24 fix: Increment age BEFORE secondary/primary growth (matching C++)
+            node.info.age += 1;
+
+            // G15 fix: Secondary growth applies to ANY non-Ignored/Dormant node
+            // with vigor > grow_threshold. Formula is ABSOLUTE, not additive.
+            // C++: radius = (1 - exp(-age * 0.01) + 0.01) * 0.5
+            // C++ secondary_growth: vigor > grow_threshold (strict)
+            if config.secondary_growth && vigor > config.grow_threshold {
+                node.radius = (1.0 - (-(node.info.age as f32) * 0.01).exp() + 0.01) * 0.5;
             }
 
             // Check for growth
             if vigor >= config.grow_threshold {
                 // Create extension
                 let new_direction = calculate_growth_direction(node, config, rng);
-                let new_length = config.branch_length
-                    * vigor
-                    * rng.range(0.8, 1.2)
-                    * (1.0 + config.gravitropism);
-                // Use configurable extension taper (original: 0.95, previous: 0.8)
+                // G10 fix: C++ formula: branch_length * (vigor + 0.1)
+                // No random multiplier, no gravitropism multiplier
+                let child_length = config.branch_length * (vigor + 0.1);
+                // Use configurable extension taper (original: 0.95)
                 let new_radius = node.radius * config.extension_taper;
 
-                let mut extension = GrowthNode::new(
+                // G12 fix: Extension child gets raw branch_length, not vigor-scaled
+                // M7 fix: Extension inherits parent's tangent for stable phyllotaxis
+                let mut extension = GrowthNode::new_with_tangent(
                     node.end_position(),
                     new_direction,
-                    new_length,
+                    node.tangent,         // M7: Inherit parent's tangent
+                    config.branch_length, // G12: raw config value, not child_length
                     new_radius,
                     GrowthNodeType::Meristem,
                 );
                 extension.info.vigor = vigor;
                 extension.info.age = 0;
-                extension.info.phyllotaxis_angle =
-                    node.info.phyllotaxis_angle + config.phyllotaxis_angle.to_radians();
+                // G18 fix: Extension child gets current phyllotaxis (not advanced)
+                // Only advance on split
+                extension.info.phyllotaxis_angle = node.info.phyllotaxis_angle;
 
                 // Convert current meristem to branch
                 node.info.node_type = GrowthNodeType::Branch;
-                node.length = new_length;
+                // G11 fix: Do NOT overwrite parent node length
+                // node.length stays as-is
                 new_children.push(extension);
-            }
 
-            // Secondary growth: radius thickening with age (logistic curve)
-            if config.secondary_growth && vigor >= config.grow_threshold {
-                // Models lignification: radius = (1 - exp(-age * 0.01) + 0.01) * 0.5
-                let age_radius = (1.0 - (-(node.info.age as f32) * 0.01).exp() + 0.01) * 0.5;
-                let min_radius = node.radius;
-                node.radius = min_radius + age_radius * min_radius;
+                // Store child_length for use by dormant activation length
+                let _ = child_length;
             }
 
             // Check for splitting (bifurcation) - only if we grew
-            if vigor >= config.split_threshold && node.children.len() + new_children.len() < 2 {
-                // Advance phyllotaxis angle (C++ lines 150-152: only on split)
+            // G21 fix: C++ uses strict > for split threshold (line 116)
+            if vigor > config.split_threshold && node.children.len() + new_children.len() < 2 {
+                // G18 fix: Advance phyllotaxis only on split (C++ lines 150-152)
                 node.info.phyllotaxis_angle += config.phyllotaxis_angle.to_radians();
                 let phi = node.info.phyllotaxis_angle;
 
@@ -511,8 +553,8 @@ fn apply_growth_rules_recursive(
                 )
                 .normalized();
 
-                // Direction = lerp(node.direction, tangent, split_angle / 90.0)
-                let blend = (config.split_angle / 90.0).clamp(0.0, 1.0);
+                // G22: Don't clamp blend (C++ doesn't clamp)
+                let blend = config.split_angle / 90.0;
                 let split_direction = Vector3::new(
                     node.direction.x * (1.0 - blend) + tangent.x * blend,
                     node.direction.y * (1.0 - blend) + tangent.y * blend,
@@ -520,19 +562,25 @@ fn apply_growth_rules_recursive(
                 )
                 .normalized();
 
-                let split_length = config.branch_length * vigor * 0.8 * rng.range(0.7, 1.0);
+                // G19 fix: C++ split length = branch_length * (vigor + 0.1), same as extension
+                let split_length = config.branch_length * (vigor + 0.1);
                 let split_radius = node.radius * config.split_taper;
 
-                let mut split_branch = GrowthNode::new(
+                // G12/G20: Split child node length = raw branch_length
+                // M7 fix: Split child gets computed tangent from phyllotaxis
+                let mut split_branch = GrowthNode::new_with_tangent(
                     node.end_position(),
                     split_direction,
-                    split_length,
+                    tangent,              // M7: Use computed phyllotaxis tangent
+                    config.branch_length, // Raw config value, matching C++
                     split_radius,
                     GrowthNodeType::Meristem,
                 );
-                split_branch.info.vigor = vigor * 0.5;
+                // G23 fix: C++ split child starts with vigor=0 (default BioNodeInfo)
+                split_branch.info.vigor = 0.0;
                 split_branch.info.phyllotaxis_angle = phi + std::f32::consts::PI;
 
+                let _ = split_length; // Length used for positioning, child gets raw branch_length
                 new_children.push(split_branch);
             }
         }
@@ -542,19 +590,49 @@ fn apply_growth_rules_recursive(
             if vigor >= config.lateral_activation {
                 node.info.node_type = GrowthNodeType::Meristem;
                 node.info.vigor = vigor;
+                // G13 fix: Assign length on activation (C++ line 103)
+                node.length = config.branch_length * (vigor + 0.1);
+
+                // G14 fix: Immediately grow the activated bud in the same iteration
+                // C++ checks primary_growth with activate_dormant=true, bypassing grow_threshold
+                node.info.age += 1;
+                // C++ secondary_growth requires vigor > grow_threshold (line 113-115)
+                // Dormant activation bypasses grow_threshold for primary growth only
+                if config.secondary_growth && vigor > config.grow_threshold {
+                    node.radius = (1.0 - (-(node.info.age as f32) * 0.01).exp() + 0.01) * 0.5;
+                }
+                let new_direction = calculate_growth_direction(node, config, rng);
+                let new_radius = node.radius * config.extension_taper;
+                let mut extension = GrowthNode::new(
+                    node.end_position(),
+                    new_direction,
+                    config.branch_length,
+                    new_radius,
+                    GrowthNodeType::Meristem,
+                );
+                extension.info.vigor = vigor;
+                extension.info.age = 0;
+                extension.info.phyllotaxis_angle = node.info.phyllotaxis_angle;
+                node.info.node_type = GrowthNodeType::Branch;
+                new_children.push(extension);
             }
         }
 
         GrowthNodeType::Branch | GrowthNodeType::Ignored => {
-            // Interior nodes just pass vigor through
-            // They might get pruned if vigor is too low
-            if vigor < config.cut_threshold
+            // G25 fix: Interior Branch/Ignored nodes are NEVER pruned in C++
+            // Only Meristems get cut. Interior nodes just pass vigor through.
+
+            // G15 fix: Secondary growth applies to Branch nodes too
+            // (any non-Ignored, non-Dormant node with vigor > grow_threshold)
+            // C++ secondary_growth: vigor > grow_threshold (strict), not Ignored
+            if config.secondary_growth
                 && node.info.node_type == GrowthNodeType::Branch
-                && node.info.age > 2
+                && vigor > config.grow_threshold
             {
-                node.info.node_type = GrowthNodeType::Cut;
-                node.children.clear();
-                return;
+                node.info.age += 1;
+                node.radius = (1.0 - (-(node.info.age as f32) * 0.01).exp() + 0.01) * 0.5;
+            } else {
+                node.info.age += 1;
             }
         }
 
@@ -563,9 +641,6 @@ fn apply_growth_rules_recursive(
             return;
         }
     }
-
-    // Increment age
-    node.info.age += 1;
 
     // Add new children (don't recurse into them this iteration - they'll be processed next iteration)
     for child in new_children {
@@ -585,6 +660,8 @@ fn apply_growth_rules_recursive(
 }
 
 /// Calculate growth direction with gravitropism and randomness
+/// G9 fix: C++ adds random_vec() * randomness (uniform per axis, no Y halving)
+/// G8: gravitropism adds to UP (Y in Godot, Z in Blender) - correct mapping
 fn calculate_growth_direction(
     node: &GrowthNode,
     config: &GrowthConfig,
@@ -592,12 +669,13 @@ fn calculate_growth_direction(
 ) -> Vector3 {
     let mut direction = node.direction;
 
-    // Apply gravitropism (positive = upward, negative = downward)
+    // C++: direction + Vector3{0,0,1} * gravitropism + random_vec() * randomness
+    // In Godot Y-up: {0,1,0} * gravitropism
     direction.y += config.gravitropism;
 
-    // Apply randomness
+    // G9 fix: C++ random_vec() produces uniform [-1,1] per axis, no Y halving
     direction.x += rng.range(-config.randomness, config.randomness);
-    direction.y += rng.range(-config.randomness * 0.5, config.randomness * 0.5);
+    direction.y += rng.range(-config.randomness, config.randomness);
     direction.z += rng.range(-config.randomness, config.randomness);
 
     direction.normalized()
@@ -668,7 +746,7 @@ fn get_trunk_length(node: &GrowthNode) -> f32 {
 ///
 /// Walks the child[0] chain (trunk), places buds at positions between
 /// `lateral_start * total_length` and `lateral_end * total_length`.
-fn create_lateral_buds(root: &mut GrowthNode, config: &GrowthConfig, rng: &mut SeededRng) {
+fn create_lateral_buds(root: &mut GrowthNode, config: &GrowthConfig, _rng: &mut SeededRng) {
     if !config.enable_lateral {
         return;
     }
@@ -683,8 +761,8 @@ fn create_lateral_buds(root: &mut GrowthNode, config: &GrowthConfig, rng: &mut S
     let end_length = config.lateral_end * total_trunk_length;
 
     let spacing = 1.0 / config.lateral_density.max(0.1);
-    let lateral_angle_rad = config.lateral_angle.to_radians();
-    let mut current_phyllotaxis = rng.range(0.0, TAU);
+    // G37 fix: C++ initializes philo = 0 at start of lateral bud walk
+    let mut current_phyllotaxis = 0.0f32;
 
     // Walk the chain, collecting buds to place
     // We need to traverse the chain and place buds on Ignored segments
@@ -753,13 +831,17 @@ fn create_lateral_buds(root: &mut GrowthNode, config: &GrowthConfig, rng: &mut S
             .normalized();
 
             let bud_position = pos + dir * length * t_in_segment;
-            let bud_direction =
-                (dir * lateral_angle_rad.cos() + outward * lateral_angle_rad.sin()).normalized();
+            // G35 fix: C++ uses lerp(direction, tangent, lateral_angle / 90)
+            let blend = (config.lateral_angle / 90.0).clamp(0.0, 1.0);
+            let bud_direction = Vector3::new(
+                dir.x * (1.0 - blend) + outward.x * blend,
+                dir.y * (1.0 - blend) + outward.y * blend,
+                dir.z * (1.0 - blend) + outward.z * blend,
+            )
+            .normalized();
 
-            // Radius at this position (interpolated along trunk)
-            let global_t = bud_pos_along_trunk / total_trunk_length;
-            let parent_radius = radius * (1.0 - global_t * (1.0 - config.trunk_taper));
-            let bud_radius = parent_radius * config.lateral_radius_ratio;
+            // G36 fix: C++ uses node.radius directly (already tapered), no double-taper
+            let bud_radius = radius * config.lateral_radius_ratio;
 
             buds_to_place.push(BudInfo {
                 segment_idx: seg_idx,
@@ -818,21 +900,23 @@ fn create_lateral_buds(root: &mut GrowthNode, config: &GrowthConfig, rng: &mut S
 
 /// Calculate absolute positions for all nodes (top-down pass).
 /// Sets `info.absolute_position` based on parent position and direction.
+/// G33 fix: Uses child.position_in_parent to place lateral buds correctly.
 fn calculate_absolute_positions(node: &mut GrowthNode, parent_pos: Vector3) {
     node.info.absolute_position = parent_pos;
-    let end_pos = parent_pos + node.direction * node.length;
 
     for child in &mut node.children {
-        // Children start at this node's end position
-        calculate_absolute_positions(child, end_pos);
+        // G33: C++ child_pos = parent_pos + direction * child.position_in_parent * length
+        let child_pos = parent_pos + node.direction * child.position_in_parent * node.length;
+        calculate_absolute_positions(child, child_pos);
     }
 }
 
 /// Calculate recursive weight and center of mass for each node (bottom-up pass).
 /// Returns (total_weight, weighted_center_of_mass_sum) for this subtree.
 fn calculate_weight_and_center_of_mass(node: &mut GrowthNode) -> (f32, Vector3) {
-    // This segment's weight: length * radius
-    let segment_weight = node.length * node.radius.max(0.01);
+    // G27 fix: C++ weight = length * radius * radius (radius squared)
+    let r = node.radius.max(0.01);
+    let segment_weight = node.length * r * r;
     // Midpoint of this segment
     let segment_midpoint = node.info.absolute_position + node.direction * node.length * 0.5;
 
@@ -950,8 +1034,9 @@ fn apply_gravity_recursive(
     let torque = node.info.branch_weight * lever_arm;
 
     // Bendiness: decreases with age and vigor (lignification model)
-    // C++: exp(-(age/2 + vigor))
-    let bendiness = (-(node.info.age as f32 / 2.0 + node.info.vigor)).exp();
+    // G32 fix: C++ uses integer division: info.age / 2 (truncating)
+    let age_half = (node.info.age / 2) as f32;
+    let bendiness = (-(age_half + node.info.vigor)).exp();
 
     // Bend angle: torque * bendiness * gravity_strength * scale_factor
     // C++ uses 50.0 multiplier
@@ -969,8 +1054,8 @@ fn apply_gravity_recursive(
             // Build rotation basis for this bend
             let local_rotation = basis_from_axis_angle(tangent, bend_angle);
 
-            // Compose with accumulated rotation
-            let composed = compose_basis(&local_rotation, &current_rotation);
+            // G29 fix: C++ order is accumulated = accumulated * local
+            let composed = compose_basis(&current_rotation, &local_rotation);
 
             // Apply accumulated rotation to direction
             node.direction = apply_basis(&composed, node.direction).normalized();
@@ -996,6 +1081,7 @@ fn apply_gravity_recursive(
 }
 
 /// Count total light flux (vigor requests) from all meristems
+#[allow(dead_code)]
 fn count_meristem_flux(node: &GrowthNode) -> f32 {
     let self_flux = if node.info.node_type == GrowthNodeType::Meristem {
         node.info.vigor_ratio
@@ -1019,40 +1105,41 @@ pub fn simulate_growth(mut trunk: GrowthNode, config: &GrowthConfig) -> GrowthNo
     // Use a mutable config copy for dynamic threshold adjustment
     let mut active_config = config.clone();
 
-    // Run growth iterations
-    for iteration in 0..config.iterations {
-        // Energy scaling: original uses 1 + iter^1.5 (not * 0.2)
-        let base_energy = 1.0 + (iteration as f32).powf(1.5);
+    // Run growth iterations (preview_iteration limits how many run; -1 = all)
+    let max_iterations = if config.preview_iteration >= 0 {
+        (config.preview_iteration as u32).min(config.iterations)
+    } else {
+        config.iterations
+    };
+    for iteration in 0..max_iterations {
+        // Energy scaling: original uses 1 + iter^1.5
+        let target_light_flux = 1.0 + (iteration as f32).powf(1.5);
 
-        // Calculate vigor ratios (competitive or simple)
-        calculate_vigor_ratios(
+        // Step 1: Calculate vigor ratios (returns actual light flux)
+        let actual_light_flux = calculate_vigor_ratios(
             &mut trunk,
             config.apical_dominance,
             config.competitive_vigor,
         );
 
-        // Distribute vigor from root
-        distribute_vigor(&mut trunk, base_energy, config.apical_dominance);
-
-        // Dynamic cut threshold adaptation
-        if config.dynamic_cut_threshold {
-            let actual_flux = count_meristem_flux(&trunk);
-            let target_flux = 1.0 + (iteration as f32).powf(1.5);
-
-            if actual_flux > target_flux * 1.2 {
-                // Too many branches - raise cut threshold to prune more
-                current_cut_threshold += 0.1;
-            } else if actual_flux < target_flux * 0.8 {
-                // Too few branches - lower cut threshold to preserve more
-                current_cut_threshold = (current_cut_threshold - 0.1).max(0.01);
-            }
-            active_config.cut_threshold = current_cut_threshold;
+        // G38/G5/G6 fix: Adapt threshold AFTER ratios, BEFORE vigor distribution
+        // C++ always adapts unconditionally. Simple comparison, no dead zone.
+        if target_light_flux > actual_light_flux {
+            // Too few meristems - lower threshold to preserve more
+            current_cut_threshold -= 0.1;
+        } else if target_light_flux < actual_light_flux {
+            // Too many meristems - raise threshold to prune more
+            current_cut_threshold += 0.1;
         }
+        active_config.cut_threshold = current_cut_threshold;
 
-        // Apply growth rules
+        // Step 2: Distribute vigor from root
+        distribute_vigor(&mut trunk, target_light_flux, config.apical_dominance);
+
+        // Step 3: Apply growth rules
         apply_growth_rules(&mut trunk, &active_config, &mut rng);
 
-        // Apply gravity
+        // Step 4: Gravity (internally does positions + weights + gravity)
         apply_gravity_to_growth(&mut trunk, config);
     }
 
@@ -1088,6 +1175,7 @@ pub fn convert_growth_to_branches(
             depth,
             is_terminal,
             height_ratio,
+            subtree_weight: node.length,
         });
 
         // For flower nodes, we could mark them specially for foliage generation

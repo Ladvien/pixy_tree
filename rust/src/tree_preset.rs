@@ -67,6 +67,10 @@ pub struct GrowthPresetValues {
     pub randomness: f32,
     pub gravity_strength: f32,
     pub stiffness: f32,
+    /// C27: Split angle for growth bifurcation (degrees)
+    pub split_angle: f32,
+    /// C27: Phyllotaxis angle for growth (degrees)
+    pub phyllotaxis_angle: f32,
 }
 
 impl GrowthPreset {
@@ -104,6 +108,8 @@ impl GrowthPresetValues {
             randomness: 0.05,
             gravity_strength: 0.0,
             stiffness: 0.8,
+            split_angle: 45.0,
+            phyllotaxis_angle: 137.5,
         }
     }
 
@@ -126,6 +132,8 @@ impl GrowthPresetValues {
             randomness: 0.1,
             gravity_strength: 0.1,
             stiffness: 0.6,
+            split_angle: 60.0,
+            phyllotaxis_angle: 137.5,
         }
     }
 
@@ -148,6 +156,8 @@ impl GrowthPresetValues {
             randomness: 0.15,
             gravity_strength: 0.3,
             stiffness: 0.3,
+            split_angle: 50.0,
+            phyllotaxis_angle: 137.5,
         }
     }
 
@@ -170,6 +180,8 @@ impl GrowthPresetValues {
             randomness: 0.3,
             gravity_strength: 0.15,
             stiffness: 0.4,
+            split_angle: 70.0,
+            phyllotaxis_angle: 137.5,
         }
     }
 
@@ -192,6 +204,8 @@ impl GrowthPresetValues {
             randomness: 0.03,  // Very consistent
             gravity_strength: 0.0,
             stiffness: 0.95, // Very rigid
+            split_angle: 30.0,
+            phyllotaxis_angle: 137.5,
         }
     }
 
@@ -214,10 +228,14 @@ impl GrowthPresetValues {
             randomness: 0.12,
             gravity_strength: 0.1,
             stiffness: 0.6,
+            split_angle: 40.0,
+            phyllotaxis_angle: 137.5,
         }
     }
 
     /// Apply these preset values to a GrowthConfig
+    /// C25 fix: branch_length is scaled consistently with manual path
+    /// (manual: branch_length * trunk_height * 0.1, preset must do the same)
     pub fn apply_to_config(&self, config: &mut GrowthConfig) {
         config.grow_threshold = self.grow_threshold;
         config.cut_threshold = self.cut_threshold;
@@ -230,11 +248,15 @@ impl GrowthPresetValues {
         config.lateral_activation = self.lateral_activation;
         config.lateral_angle = self.lateral_angle;
         config.iterations = self.iterations;
-        config.branch_length = self.branch_length;
+        // C25 fix: Apply same scaling as manual path
+        config.branch_length = self.branch_length * config.trunk_height * 0.1;
         config.gravitropism = self.gravitropism;
         config.randomness = self.randomness;
         config.gravity_strength = self.gravity_strength;
         config.stiffness = self.stiffness;
+        // C27 fix: Apply split_angle and phyllotaxis_angle from preset
+        config.split_angle = self.split_angle;
+        config.phyllotaxis_angle = self.phyllotaxis_angle;
     }
 }
 
@@ -300,6 +322,7 @@ pub struct TreePresetValues {
     pub split_angle: f32,
     pub split_position: f32,
     pub split_radius_threshold: f32,
+    pub split_radius_multiplier: f32,
 
     // Floor Avoidance
     pub floor_avoidance: bool,
@@ -398,6 +421,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -460,6 +484,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -522,6 +547,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.05,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -584,6 +610,7 @@ impl TreePresetValues {
             split_angle: 25.0,
             split_position: 0.5,
             split_radius_threshold: 0.05,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -646,6 +673,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -708,6 +736,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -770,6 +799,7 @@ impl TreePresetValues {
             split_angle: 35.0,
             split_position: 0.5,
             split_radius_threshold: 0.06,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -832,6 +862,7 @@ impl TreePresetValues {
             split_angle: 28.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -894,6 +925,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -956,6 +988,7 @@ impl TreePresetValues {
             split_angle: 20.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -1018,6 +1051,7 @@ impl TreePresetValues {
             split_angle: 35.0,
             split_position: 0.6,
             split_radius_threshold: 0.15,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -1080,6 +1114,7 @@ impl TreePresetValues {
             split_angle: 40.0,
             split_position: 0.5,
             split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -1142,6 +1177,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.4,
             split_radius_threshold: 0.05,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -1204,6 +1240,7 @@ impl TreePresetValues {
             split_angle: 40.0,
             split_position: 0.4,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: false, // Branches can touch ground
             floor_level: 0.0,
             branch_collar_enabled: true,
@@ -1266,6 +1303,7 @@ impl TreePresetValues {
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
             branch_collar_enabled: true,

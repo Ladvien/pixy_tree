@@ -69,6 +69,11 @@ pub fn laplacian_smooth_weighted(
 
 /// Build a map from vertex index to its neighboring vertex indices.
 /// Two vertices are neighbors if they share an edge in any triangle.
+///
+/// M9 note: C++ builds adjacency from polygon edges (skipping one edge per polygon,
+/// typically the diagonal in a quad). Since Rust uses triangulated meshes, we include
+/// all triangle edges. This may produce slightly different smoothing results.
+/// To match C++ exactly, would need to track original quad topology before triangulation.
 fn build_adjacency_map(vertex_count: usize, indices: &[i32]) -> HashMap<usize, Vec<usize>> {
     let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::with_capacity(vertex_count);
 
@@ -113,7 +118,7 @@ fn smooth_pass(vertices: &mut [Vector3], adjacency: &HashMap<usize, Vec<usize>>,
         .enumerate()
         .map(|(i, &vertex)| {
             if let Some(neighbors) = adjacency.get(&i) {
-                if neighbors.is_empty() {
+                if neighbors.len() <= 1 {
                     return vertex;
                 }
 
@@ -155,7 +160,7 @@ fn smooth_pass_weighted(
             }
 
             if let Some(neighbors) = adjacency.get(&i) {
-                if neighbors.is_empty() {
+                if neighbors.len() <= 1 {
                     return vertex;
                 }
 

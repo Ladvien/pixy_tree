@@ -5,8 +5,8 @@ use godot::prelude::*;
 
 use crate::branch::{
     apply_pipe_radius_model, generate_branch_collar, generate_branch_mesh_with_resolution,
-    generate_branch_origins, generate_split_branches, generate_sub_branches, BranchConfig,
-    BranchSegment, MeshData, SeededRng,
+    generate_branch_origins, generate_branch_origins_multi_segment, generate_split_branches,
+    generate_sub_branches, BranchConfig, BranchSegment, MeshData, SeededRng,
 };
 use crate::crown_shape::CrownShape;
 use crate::foliage::{
@@ -17,6 +17,7 @@ use crate::growth::{
     convert_growth_to_branches, create_trunk_structure, simulate_growth, GrowthConfig,
 };
 use crate::manifold_mesher::{segments_to_tree, ManifoldMesherConfig};
+use crate::property::{BranchProperty, PropertyMode};
 use crate::smoothing::{laplacian_smooth, laplacian_smooth_weighted, recalculate_normals};
 use crate::tree_preset::{GrowthPreset, GrowthPresetValues, TreePreset, TreePresetValues};
 
@@ -28,6 +29,17 @@ pub enum TrunkTermination {
     FlatCap = 0, // Current behavior - flat circular cap
     PointedTip = 1,   // Taper trunk to a point (no cap)
     LeaderBranch = 2, // Generate central leader extending up
+}
+
+/// M4: Branch taper parameterization style
+#[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
+#[godot(via = i64)]
+pub enum TaperMode {
+    /// Legacy Rust style: tip = base * (1 - taper)
+    #[default]
+    Legacy = 0,
+    /// C++ style: tip = base * end_radius (direct end ratio)
+    EndRadius = 1,
 }
 
 #[derive(GodotClass)]
@@ -128,17 +140,17 @@ pub struct PixyTree {
     // ═══════════════════════════════════════════
     /// Where branches start on trunk (0-1 ratio of height)
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.3)]
+    #[init(val = 0.1)]
     branch_start: f32,
 
     /// Where branches end on trunk (0-1 ratio of height)
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.9)]
+    #[init(val = 1.0)]
     branch_end: f32,
 
     /// Branches per unit length
     #[export(range = (0.1, 5.0, 0.1))]
-    #[init(val = 1.0)]
+    #[init(val = 2.0)]
     branch_density: f32,
 
     /// Branch length relative to trunk height
@@ -151,29 +163,80 @@ pub struct PixyTree {
     #[init(val = 45.0)]
     branch_angle: f32,
 
+    /// H7: Angle property mode (Constant/Random/Curve)
+    #[export]
+    #[init(val = PropertyMode::Constant)]
+    branch_angle_mode: PropertyMode,
+
+    /// H7: Angle curve end ratio (for Curve mode)
+    #[export(range = (0.0, 2.0, 0.1))]
+    #[init(val = 1.0)]
+    branch_angle_curve_end: f32,
+
+    /// H7: Angle curve power (for Curve mode)
+    #[export(range = (0.1, 3.0, 0.1))]
+    #[init(val = 1.0)]
+    branch_angle_curve_power: f32,
+
+    /// H7: Angle variation (for Random mode)
+    #[export(range = (0.0, 30.0, 1.0))]
+    #[init(val = 5.0)]
+    branch_angle_variation: f32,
+
     /// Branch radius relative to trunk radius at attachment point
     #[export(range = (0.1, 0.8, 0.05))]
     #[init(val = 0.3)]
     branch_radius_ratio: f32,
 
-    /// Taper from base to tip (0=none, 1=point)
+    /// Taper from base to tip (0=none, 1=point) - used when taper_mode=Legacy
     #[export(range = (0.0, 1.0, 0.05))]
     #[init(val = 0.7)]
     branch_taper: f32,
+
+    /// M4: Taper parameterization mode
+    #[export]
+    #[init(val = TaperMode::Legacy)]
+    taper_mode: TaperMode,
+
+    /// M4: End radius ratio (C++ style) - used when taper_mode=EndRadius
+    /// Tip radius = base_radius * branch_end_radius
+    #[export(range = (0.01, 0.5, 0.01))]
+    #[init(val = 0.05)]
+    branch_end_radius: f32,
 
     /// Spiral angle between branches (137.5° = golden angle)
     #[export(range = (0.0, 360.0, 0.5))]
     #[init(val = 137.5)]
     phyllotaxis_angle: f32,
 
-    /// Direction randomness
+    /// Direction randomness base value
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.2)]
+    #[init(val = 0.4)]
     branch_randomness: f32,
+
+    /// H7: Randomness property mode (Constant/Random/Curve)
+    #[export]
+    #[init(val = PropertyMode::Constant)]
+    branch_randomness_mode: PropertyMode,
+
+    /// H7: Randomness curve end ratio (for Curve mode)
+    #[export(range = (0.0, 2.0, 0.1))]
+    #[init(val = 1.0)]
+    branch_randomness_curve_end: f32,
+
+    /// H7: Randomness curve power (for Curve mode)
+    #[export(range = (0.1, 3.0, 0.1))]
+    #[init(val = 1.0)]
+    branch_randomness_curve_power: f32,
+
+    /// H7: Randomness variation (for Random mode)
+    #[export(range = (0.0, 0.5, 0.05))]
+    #[init(val = 0.1)]
+    branch_randomness_variation: f32,
 
     /// Upward growth tendency
     #[export(range = (-1.0, 1.0, 0.05))]
-    #[init(val = 0.1)]
+    #[init(val = 0.25)]
     up_attraction: f32,
 
     /// Sub-branch recursion levels (0=none)
@@ -200,6 +263,11 @@ pub struct PixyTree {
     #[export(range = (-1.0, 1.0, 0.05))]
     #[init(val = 0.0)]
     crown_angle_variation: f32,
+
+    /// Multi-segment branch resolution: segments per unit length (0 = legacy single-segment)
+    #[export(range = (0.0, 10.0, 0.5))]
+    #[init(val = 0.0)]
+    branch_resolution: f32,
 
     /// Length multiplier per recursion level
     #[export(range = (0.3, 0.8, 0.05))]
@@ -239,7 +307,7 @@ pub struct PixyTree {
 
     /// Leader dominance over side branches (0 = equal growth, 1 = strong leader)
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.5)]
+    #[init(val = 0.7)]
     apical_dominance: f32,
 
     // ═══════════════════════════════════════════
@@ -265,7 +333,7 @@ pub struct PixyTree {
 
     /// Resistance to gravity bending (higher = stiffer wood)
     #[export(range = (0.0, 10.0, 0.1))]
-    #[init(val = 0.5)]
+    #[init(val = 0.1)]
     stiffness: f32,
 
     // ═══════════════════════════════════════════
@@ -286,12 +354,12 @@ pub struct PixyTree {
 
     /// Chance each branch splits
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.3)]
+    #[init(val = 0.5)]
     split_probability: f32,
 
     /// Angle between split branches (degrees)
     #[export(range = (10.0, 60.0, 1.0))]
-    #[init(val = 30.0)]
+    #[init(val = 45.0)]
     split_angle: f32,
 
     /// Where along branch split occurs (0.0-1.0)
@@ -303,6 +371,11 @@ pub struct PixyTree {
     #[export(range = (0.0, 0.5, 0.01))]
     #[init(val = 0.05)]
     split_radius_threshold: f32,
+
+    /// M5: Split child radius multiplier (C++ default 0.9)
+    #[export(range = (0.5, 1.0, 0.05))]
+    #[init(val = 0.9)]
+    split_radius_multiplier: f32,
 
     // ═══════════════════════════════════════════
     // Floor Avoidance Settings
@@ -634,9 +707,14 @@ pub struct PixyTree {
     #[init(val = 5)]
     growth_iterations: i32,
 
+    /// Preview iteration (-1 = run all, otherwise stop at that iteration for preview)
+    #[export(range = (-1.0, 20.0, 1.0))]
+    #[init(val = -1)]
+    preview_iteration: i32,
+
     /// Minimum vigor to extend a branch
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.3)]
+    #[init(val = 0.5)]
     grow_threshold: f32,
 
     /// Vigor below which branches are pruned
@@ -701,7 +779,7 @@ pub struct PixyTree {
 
     /// Enable dynamic cut threshold adaptation (auto-balances branch count)
     #[export]
-    #[init(val = false)]
+    #[init(val = true)]
     dynamic_cut_threshold: bool,
 
     /// Extension taper: radius ratio when extending (0.95 = original, 0.8 = previous)
@@ -840,16 +918,26 @@ impl PixyTree {
         self.leader_has_branches = false;
 
         // Branch
-        self.branch_start = 0.3;
-        self.branch_end = 0.9;
-        self.branch_density = 1.0;
+        self.branch_start = 0.1;
+        self.branch_end = 1.0;
+        self.branch_density = 2.0;
         self.branch_length = 0.4;
         self.branch_angle = 45.0;
+        self.branch_angle_mode = PropertyMode::Constant;
+        self.branch_angle_curve_end = 1.0;
+        self.branch_angle_curve_power = 1.0;
+        self.branch_angle_variation = 5.0;
         self.branch_radius_ratio = 0.3;
         self.branch_taper = 0.7;
+        self.taper_mode = TaperMode::Legacy;
+        self.branch_end_radius = 0.05;
         self.phyllotaxis_angle = 137.5;
-        self.branch_randomness = 0.2;
-        self.up_attraction = 0.1;
+        self.branch_randomness = 0.4;
+        self.branch_randomness_mode = PropertyMode::Constant;
+        self.branch_randomness_curve_end = 1.0;
+        self.branch_randomness_curve_power = 1.0;
+        self.branch_randomness_variation = 0.1;
+        self.up_attraction = 0.25;
         self.branch_recursion = 1;
         self.sub_branch_count = 2;
         self.sub_branch_scale = 0.5;
@@ -863,6 +951,7 @@ impl PixyTree {
         self.branch_flatness = 0.0;
         self.branch_angle_curve = 0.0;
         self.crown_angle_variation = 0.0;
+        self.branch_resolution = 0.0;
 
         // Twist
         self.trunk_twist = 0.0;
@@ -877,10 +966,11 @@ impl PixyTree {
 
         // Splitting
         self.split_enabled = false;
-        self.split_probability = 0.3;
-        self.split_angle = 30.0;
+        self.split_probability = 0.5;
+        self.split_angle = 45.0;
         self.split_position = 0.5;
         self.split_radius_threshold = 0.05;
+        self.split_radius_multiplier = 0.9;
 
         // Floor Avoidance
         self.floor_avoidance = true;
@@ -961,6 +1051,7 @@ impl PixyTree {
         self.growth_enabled = false;
         self.growth_preset = GrowthPreset::Custom;
         self.growth_iterations = 5;
+        self.preview_iteration = -1;
         self.grow_threshold = 0.3;
         self.cut_threshold = 0.1;
         self.split_threshold = 0.7;
@@ -974,7 +1065,7 @@ impl PixyTree {
         self.growth_randomness = 0.2;
         self.flowering_enabled = false;
         self.flower_threshold = 0.15;
-        self.dynamic_cut_threshold = false;
+        self.dynamic_cut_threshold = true;
         self.growth_extension_taper = 0.95;
         self.growth_split_taper = 0.9;
         self.secondary_growth = false;
@@ -1045,6 +1136,7 @@ impl PixyTree {
         self.split_angle = values.split_angle;
         self.split_position = values.split_position;
         self.split_radius_threshold = values.split_radius_threshold;
+        self.split_radius_multiplier = values.split_radius_multiplier;
 
         // Floor Avoidance
         self.floor_avoidance = values.floor_avoidance;
@@ -1088,10 +1180,24 @@ impl PixyTree {
         hash = hash.wrapping_add((self.branch_density.to_bits() as u64).wrapping_mul(59));
         hash = hash.wrapping_add((self.branch_length.to_bits() as u64).wrapping_mul(61));
         hash = hash.wrapping_add((self.branch_angle.to_bits() as u64).wrapping_mul(67));
+        hash = hash.wrapping_add((self.branch_angle_mode as u64).wrapping_mul(863));
+        hash = hash.wrapping_add((self.branch_angle_curve_end.to_bits() as u64).wrapping_mul(877));
+        hash =
+            hash.wrapping_add((self.branch_angle_curve_power.to_bits() as u64).wrapping_mul(881));
+        hash = hash.wrapping_add((self.branch_angle_variation.to_bits() as u64).wrapping_mul(883));
         hash = hash.wrapping_add((self.branch_radius_ratio.to_bits() as u64).wrapping_mul(71));
         hash = hash.wrapping_add((self.branch_taper.to_bits() as u64).wrapping_mul(73));
+        hash = hash.wrapping_add((self.taper_mode as u64).wrapping_mul(929));
+        hash = hash.wrapping_add((self.branch_end_radius.to_bits() as u64).wrapping_mul(937));
         hash = hash.wrapping_add((self.phyllotaxis_angle.to_bits() as u64).wrapping_mul(79));
         hash = hash.wrapping_add((self.branch_randomness.to_bits() as u64).wrapping_mul(83));
+        hash = hash.wrapping_add((self.branch_randomness_mode as u64).wrapping_mul(887));
+        hash = hash
+            .wrapping_add((self.branch_randomness_curve_end.to_bits() as u64).wrapping_mul(907));
+        hash = hash
+            .wrapping_add((self.branch_randomness_curve_power.to_bits() as u64).wrapping_mul(911));
+        hash = hash
+            .wrapping_add((self.branch_randomness_variation.to_bits() as u64).wrapping_mul(919));
         hash = hash.wrapping_add((self.up_attraction.to_bits() as u64).wrapping_mul(89));
         hash = hash.wrapping_add((self.branch_recursion as u64).wrapping_mul(97));
         hash = hash.wrapping_add((self.sub_branch_count as u64).wrapping_mul(101));
@@ -1099,6 +1205,7 @@ impl PixyTree {
         hash = hash.wrapping_add((self.branch_flatness.to_bits() as u64).wrapping_mul(313));
         hash = hash.wrapping_add((self.branch_angle_curve.to_bits() as u64).wrapping_mul(317));
         hash = hash.wrapping_add((self.crown_angle_variation.to_bits() as u64).wrapping_mul(373));
+        hash = hash.wrapping_add((self.branch_resolution.to_bits() as u64).wrapping_mul(853));
         hash = hash.wrapping_add((self.branch_length_variation.to_bits() as u64).wrapping_mul(337));
         hash = hash.wrapping_add((self.branch_length_curve_end.to_bits() as u64).wrapping_mul(743));
         hash =
@@ -1146,6 +1253,7 @@ impl PixyTree {
         hash = hash.wrapping_add((self.split_angle.to_bits() as u64).wrapping_mul(269));
         hash = hash.wrapping_add((self.split_position.to_bits() as u64).wrapping_mul(271));
         hash = hash.wrapping_add((self.split_radius_threshold.to_bits() as u64).wrapping_mul(311));
+        hash = hash.wrapping_add((self.split_radius_multiplier.to_bits() as u64).wrapping_mul(857));
         // Trunk taper, stiffness, and break_chance parameters
         hash = hash.wrapping_add((self.trunk_taper.to_bits() as u64).wrapping_mul(277));
         hash = hash.wrapping_add((self.trunk_taper_curve.to_bits() as u64).wrapping_mul(281));
@@ -1171,6 +1279,7 @@ impl PixyTree {
         hash = hash.wrapping_add((self.growth_enabled as u64).wrapping_mul(431));
         hash = hash.wrapping_add((self.growth_preset as u64).wrapping_mul(433));
         hash = hash.wrapping_add((self.growth_iterations as u64).wrapping_mul(439));
+        hash = hash.wrapping_add((self.preview_iteration as u64).wrapping_mul(440));
         hash = hash.wrapping_add((self.grow_threshold.to_bits() as u64).wrapping_mul(443));
         hash = hash.wrapping_add((self.cut_threshold.to_bits() as u64).wrapping_mul(449));
         hash = hash.wrapping_add((self.split_threshold.to_bits() as u64).wrapping_mul(457));
@@ -1292,57 +1401,68 @@ impl PixyTree {
                 config.branch_recursion = self.preview_recursion_depth;
             }
 
-            let mut primary_branches = generate_branch_origins(&config, &mut rng);
-
-            // Apply preview branch limit
-            if self.preview_branch_limit > 0 {
-                primary_branches.truncate(self.preview_branch_limit as usize);
-            }
-
             // Default branch segments (used when adaptive resolution is off)
             let default_branch_segments = (self.radial_segments / 2).max(4);
 
             // Collect all branches (with their collar info for later mesh generation)
-            let mut all_branches: Vec<BranchSegment> = Vec::new();
-            let mut stub_branches: Vec<BranchSegment> = Vec::new(); // Stub segments from splits
+            let mut all_branches: Vec<BranchSegment>;
+            let mut stub_branches: Vec<BranchSegment> = Vec::new();
 
-            // Collect leader branch if enabled
-            if self.trunk_termination == TrunkTermination::LeaderBranch {
-                let leader = self.create_leader_branch();
-                all_branches.push(leader.clone());
+            if config.resolution > 0.0 {
+                // ═══════════════════════════════════════════
+                // Multi-segment BFS path (AG1-AG5)
+                // ═══════════════════════════════════════════
+                all_branches = generate_branch_origins_multi_segment(&config, &mut rng);
 
-                // Collect sub-branches on leader if enabled
-                if self.leader_has_branches {
-                    let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
-                    all_branches.extend(sub_branches);
+                // Leader branch (unchanged, single-segment)
+                if self.trunk_termination == TrunkTermination::LeaderBranch {
+                    let leader = self.create_leader_branch();
+                    all_branches.push(leader.clone());
+                    if self.leader_has_branches {
+                        let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
+                        all_branches.extend(sub_branches);
+                    }
                 }
-            }
+            } else {
+                // ═══════════════════════════════════════════
+                // Legacy single-segment path (unchanged)
+                // ═══════════════════════════════════════════
+                all_branches = Vec::new();
+                let mut primary_branches = generate_branch_origins(&config, &mut rng);
 
-            // Collect all primary branches and their sub-branches
-            for branch in &primary_branches {
-                // Check for branch splitting
-                if let Some((stub, split1, split2)) =
-                    generate_split_branches(branch, &config, &mut rng)
-                {
-                    // Store stub separately (it has no collar)
-                    stub_branches.push(stub);
+                // Apply preview branch limit
+                if self.preview_branch_limit > 0 {
+                    primary_branches.truncate(self.preview_branch_limit as usize);
+                }
 
-                    // Collect both split branches
-                    all_branches.push(split1.clone());
-                    all_branches.push(split2.clone());
+                // Collect leader branch if enabled
+                if self.trunk_termination == TrunkTermination::LeaderBranch {
+                    let leader = self.create_leader_branch();
+                    all_branches.push(leader.clone());
 
-                    // Sub-branches from split branches
-                    let sub1 = generate_sub_branches(&split1, &config, &mut rng, 0);
-                    let sub2 = generate_sub_branches(&split2, &config, &mut rng, 0);
-                    all_branches.extend(sub1);
-                    all_branches.extend(sub2);
-                } else {
-                    // Normal branch
-                    all_branches.push(branch.clone());
+                    if self.leader_has_branches {
+                        let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
+                        all_branches.extend(sub_branches);
+                    }
+                }
 
-                    // Collect sub-branches recursively
-                    let sub_branches = generate_sub_branches(branch, &config, &mut rng, 0);
-                    all_branches.extend(sub_branches);
+                // Collect all primary branches and their sub-branches
+                for branch in &primary_branches {
+                    if let Some((stub, split1, split2)) =
+                        generate_split_branches(branch, &config, &mut rng)
+                    {
+                        stub_branches.push(stub);
+                        all_branches.push(split1.clone());
+                        all_branches.push(split2.clone());
+                        let sub1 = generate_sub_branches(&split1, &config, &mut rng, 0);
+                        let sub2 = generate_sub_branches(&split2, &config, &mut rng, 0);
+                        all_branches.extend(sub1);
+                        all_branches.extend(sub2);
+                    } else {
+                        all_branches.push(branch.clone());
+                        let sub_branches = generate_sub_branches(branch, &config, &mut rng, 0);
+                        all_branches.extend(sub_branches);
+                    }
                 }
             }
 
@@ -1554,7 +1674,13 @@ impl PixyTree {
             branch_length: self.branch_length,
             branch_angle: self.branch_angle,
             branch_radius_ratio: self.branch_radius_ratio,
-            branch_taper: self.branch_taper,
+            // M4: Compute branch_taper based on taper_mode
+            // Legacy: tip = base * (1 - taper), so end_ratio = 1 - taper
+            // EndRadius: tip = base * end_radius, so we set taper = 1 - end_radius
+            branch_taper: match self.taper_mode {
+                TaperMode::Legacy => self.branch_taper,
+                TaperMode::EndRadius => 1.0 - self.branch_end_radius,
+            },
             phyllotaxis_angle: self.phyllotaxis_angle,
             branch_randomness: self.branch_randomness,
             up_attraction: self.up_attraction,
@@ -1585,6 +1711,7 @@ impl PixyTree {
             split_angle: self.split_angle,
             split_position: self.split_position,
             split_radius_threshold: self.split_radius_threshold,
+            split_radius_multiplier: self.split_radius_multiplier,
             floor_avoidance: self.floor_avoidance,
             floor_level: self.floor_level,
             branch_length_curve_end: self.branch_length_curve_end,
@@ -1593,6 +1720,61 @@ impl PixyTree {
             branch_radius_curve_power: self.branch_radius_curve_power,
             crown_base_size: self.crown_base_size,
             crown_height: self.crown_height,
+            resolution: self.branch_resolution,
+            length_property: if (self.branch_length_curve_end - 1.0).abs() > 0.001 {
+                BranchProperty::curve(
+                    self.branch_length * self.trunk_height,
+                    self.branch_length_curve_end,
+                    self.branch_length_curve_power,
+                )
+            } else {
+                BranchProperty::constant(self.branch_length * self.trunk_height)
+            },
+            // H7: Randomness property with mode selection
+            randomness_property: match self.branch_randomness_mode {
+                PropertyMode::Curve => BranchProperty::curve(
+                    self.branch_randomness,
+                    self.branch_randomness_curve_end,
+                    self.branch_randomness_curve_power,
+                ),
+                PropertyMode::Random => BranchProperty {
+                    mode: PropertyMode::Random,
+                    base_value: self.branch_randomness,
+                    curve_power: 1.0,
+                    curve_end_ratio: 1.0,
+                    random_variation: self.branch_randomness_variation,
+                    x_min: 0.0,
+                    x_max: 1.0,
+                },
+                PropertyMode::Constant => BranchProperty::constant(self.branch_randomness),
+            },
+            // H7: Angle property with mode selection
+            start_angle_property: match self.branch_angle_mode {
+                PropertyMode::Curve => BranchProperty::curve(
+                    self.branch_angle,
+                    self.branch_angle_curve_end,
+                    self.branch_angle_curve_power,
+                ),
+                PropertyMode::Random => BranchProperty {
+                    mode: PropertyMode::Random,
+                    base_value: self.branch_angle,
+                    curve_power: 1.0,
+                    curve_end_ratio: 1.0,
+                    random_variation: self.branch_angle_variation,
+                    x_min: 0.0,
+                    x_max: 1.0,
+                },
+                PropertyMode::Constant => BranchProperty::constant(self.branch_angle),
+            },
+            start_radius_property: if (self.branch_radius_curve_end - 1.0).abs() > 0.001 {
+                BranchProperty::curve(
+                    self.branch_radius_ratio,
+                    self.branch_radius_curve_end,
+                    self.branch_radius_curve_power,
+                )
+            } else {
+                BranchProperty::constant(self.branch_radius_ratio)
+            },
         }
     }
 
@@ -1672,15 +1854,17 @@ impl PixyTree {
             0.0
         };
 
+        let leader_len = self.trunk_height * self.leader_length;
         BranchSegment {
             start: Vector3::new(top_wobble_x, self.trunk_height, top_wobble_z),
             direction: Vector3::UP,
-            length: self.trunk_height * self.leader_length,
+            length: leader_len,
             base_radius: trunk_top_radius,
             tip_radius: trunk_top_radius * self.leader_taper,
             depth: 0,
             is_terminal: !self.leader_has_branches,
             height_ratio: 1.0,
+            subtree_weight: leader_len,
         }
     }
 
@@ -2116,6 +2300,7 @@ impl PixyTree {
             trunk_up_attraction: self.growth_trunk_up_attraction,
             split_angle: self.growth_split_angle,
             phyllotaxis_angle: self.growth_phyllotaxis_angle,
+            preview_iteration: self.preview_iteration,
         };
 
         // Apply growth preset if not Custom

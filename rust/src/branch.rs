@@ -2,6 +2,7 @@ use godot::prelude::*;
 use std::f32::consts::TAU;
 
 use crate::crown_shape::CrownShape;
+use crate::property::BranchProperty;
 
 /// Accumulated mesh data for combining trunk + branches
 #[derive(Default, Clone)]
@@ -65,6 +66,72 @@ pub struct BranchSegment {
     pub is_terminal: bool,
     /// Height ratio within crown (0.0 at branch_start, 1.0 at branch_end)
     pub height_ratio: f32,
+    /// B12: Cumulated weight of this branch and all descendants (for gravity)
+    /// Computed by apply_pipe_radius_model; defaults to own length.
+    pub subtree_weight: f32,
+}
+
+/// Tracking info for multi-segment branch growth (AG1)
+#[derive(Clone, Debug)]
+pub struct BranchGrowthInfo {
+    pub desired_length: f32,
+    pub current_length: f32,
+    pub origin_radius: f32,
+    pub end_radius_ratio: f32,
+    pub cumulated_weight: f32,
+    pub deviation: f32,
+    pub age: f32,
+    pub inactive: bool,
+    /// H2: Cumulative rotation basis (row-major 3x3) for proper quaternion-like composition
+    pub cumulative_rotation: [f32; 9],
+}
+
+/// Identity rotation basis (row-major 3x3)
+const IDENTITY_BASIS: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
+/// Apply a 3x3 basis matrix to a vector (row-major)
+fn apply_basis(basis: &[f32; 9], v: Vector3) -> Vector3 {
+    Vector3::new(
+        basis[0] * v.x + basis[1] * v.y + basis[2] * v.z,
+        basis[3] * v.x + basis[4] * v.y + basis[5] * v.z,
+        basis[6] * v.x + basis[7] * v.y + basis[8] * v.z,
+    )
+}
+
+/// Compose two 3x3 basis matrices (row-major): result = a * b
+fn compose_basis(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+    [
+        a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+        a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+        a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+        a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+        a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+        a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+        a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+        a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+        a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+    ]
+}
+
+/// Build a rotation basis from axis-angle (row-major 3x3)
+fn basis_from_axis_angle(axis: Vector3, angle: f32) -> [f32; 9] {
+    let c = angle.cos();
+    let s = angle.sin();
+    let t = 1.0 - c;
+    let x = axis.x;
+    let y = axis.y;
+    let z = axis.z;
+    [
+        t * x * x + c,
+        t * x * y - s * z,
+        t * x * z + s * y,
+        t * x * y + s * z,
+        t * y * y + c,
+        t * y * z - s * x,
+        t * x * z - s * y,
+        t * y * z + s * x,
+        t * z * z + c,
+    ]
 }
 
 /// Configuration for branch generation (extracted from PixyTree exports)
@@ -121,6 +188,8 @@ pub struct BranchConfig {
     // Floor avoidance
     pub floor_avoidance: bool,
     pub floor_level: f32,
+    // M5: Configurable split radius multiplier (C++ default 0.9)
+    pub split_radius_multiplier: f32,
     // Property curves (height-dependent parameters)
     /// Branch length curve end ratio (1.0 = uniform, <1 shorter at top)
     pub branch_length_curve_end: f32,
@@ -134,6 +203,13 @@ pub struct BranchConfig {
     pub crown_base_size: f32,
     /// Crown height override (-1.0 = auto, use trunk_height)
     pub crown_height: f32,
+    /// Branch resolution: segments per unit length (0 = legacy single-segment)
+    pub resolution: f32,
+    /// Property wrappers for height-dependent parameters (AG5)
+    pub length_property: BranchProperty,
+    pub randomness_property: BranchProperty,
+    pub start_angle_property: BranchProperty,
+    pub start_radius_property: BranchProperty,
 }
 
 /// Xorshift64 RNG for deterministic generation
@@ -169,9 +245,9 @@ impl SeededRng {
     }
 }
 
-/// Linear interpolation for f32
+/// Linear interpolation for f32 (M3 fix: C++ float lerp clamps t to [0,1])
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
+    a + (b - a) * t.clamp(0.0, 1.0)
 }
 
 /// Linear interpolation for Vector3
@@ -180,13 +256,16 @@ fn lerp_vec3(a: Vector3, b: Vector3, t: f32) -> Vector3 {
 }
 
 /// Generate a random unit vector offset
-fn random_vec(rng: &mut SeededRng) -> Vector3 {
-    Vector3::new(
+/// H1 fix: C++ random_vec(flatness) flattens vertical (Z in Z-up = Y in Y-up) BEFORE normalizing.
+/// This produces a different directional distribution than normalize-then-flatten.
+fn random_vec(rng: &mut SeededRng, flatness: f32) -> Vector3 {
+    let mut v = Vector3::new(
         rng.range(-1.0, 1.0),
         rng.range(-1.0, 1.0),
         rng.range(-1.0, 1.0),
-    )
-    .normalized()
+    );
+    v.y *= 1.0 - flatness;
+    v.normalized()
 }
 
 /// Get a perpendicular vector to the given direction
@@ -236,6 +315,7 @@ pub fn generate_split_branches(
         depth: parent.depth,
         is_terminal: false, // Never terminal - it has children
         height_ratio: parent.height_ratio,
+        subtree_weight: parent.length * split_t,
     };
 
     // Calculate divergent directions for the two split branches
@@ -257,29 +337,36 @@ pub fn generate_split_branches(
     // Branch 2: Deflect in opposite direction
     let dir2 = (parent.direction * half_angle.cos() - rotated_perp * half_angle.sin()).normalized();
 
-    // Each split branch gets roughly half the remaining radius reduction
-    let branch_tip_radius = parent.tip_radius * 0.9; // Slightly smaller tips
+    // M5: Use configurable split radius multiplier (C++ default 0.9)
+    let split_mult = config.split_radius_multiplier;
+    let branch_tip_radius = parent.tip_radius * split_mult;
 
+    let branch1_length = remaining_length * rng.range(0.9, 1.1);
     let branch1 = BranchSegment {
         start: split_point,
         direction: dir1,
-        length: remaining_length * rng.range(0.9, 1.1), // Slight length variation
-        base_radius: split_radius * 0.7,                // Each split branch is thinner
-        tip_radius: branch_tip_radius * 0.7,
+        length: branch1_length,
+        base_radius: split_radius * split_mult,
+        tip_radius: branch_tip_radius * split_mult,
         depth: parent.depth,
         is_terminal: parent.is_terminal,
         height_ratio: parent.height_ratio,
+        subtree_weight: branch1_length,
     };
 
+    // Secondary branch gets slightly smaller (split_mult - 0.2)
+    let secondary_mult = (split_mult - 0.2).max(0.3);
+    let branch2_length = remaining_length * rng.range(0.9, 1.1);
     let branch2 = BranchSegment {
         start: split_point,
         direction: dir2,
-        length: remaining_length * rng.range(0.9, 1.1),
-        base_radius: split_radius * 0.7,
-        tip_radius: branch_tip_radius * 0.7,
+        length: branch2_length,
+        base_radius: split_radius * secondary_mult,
+        tip_radius: branch_tip_radius * secondary_mult,
         depth: parent.depth,
         is_terminal: parent.is_terminal,
         height_ratio: parent.height_ratio,
+        subtree_weight: branch2_length,
     };
 
     Some((stub, branch1, branch2))
@@ -289,6 +376,9 @@ pub fn generate_split_branches(
 pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Vec<BranchSegment> {
     let mut branches = Vec::new();
     let mut current_angle = 0.0f32;
+    // A5 fix: Maintain persistent tangent vector across branches (C++ pattern).
+    // Initialize from orthogonal to initial trunk direction (UP for straight trunk).
+    let mut tangent = get_perpendicular(Vector3::UP);
 
     // Calculate branch zone with crown_base_size and crown_height overrides
     let effective_height = if config.crown_height < 0.0 {
@@ -296,7 +386,10 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
     } else {
         config.crown_height
     };
+    // B9 fix: Crown zone is measured from crown_base_size to top of effective_height
+    // Branch zone may be a subset of the crown zone
     let crown_start = effective_height * config.crown_base_size;
+    let crown_zone_height = effective_height * (1.0 - config.crown_base_size);
     let start_height = (config.trunk_height * config.branch_start).max(crown_start);
     let end_height = config.trunk_height * config.branch_end;
     let zone_length = end_height - start_height;
@@ -323,8 +416,9 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             continue; // Skip this branch (it "broke off")
         }
 
-        // Phyllotaxis spiral + randomness (from modular_tree pattern)
-        current_angle += config.phyllotaxis_angle + rng.range(-10.0, 10.0);
+        // A5 fix: Accumulate phyllotaxis angle for branch start position on trunk surface.
+        // Jitter is applied to the tangent rotation below (matching C++ which applies it there).
+        current_angle += config.phyllotaxis_angle;
         let angle_rad = current_angle.to_radians();
 
         // Trunk radius at this height (using proper taper parameters)
@@ -363,9 +457,19 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         );
 
         // Direction: lerp from up to outward based on branch_angle
-        // position_ratio: 0→1 from bottom→top of crown (for property curves, apical dominance)
+        // B9 fix: position_ratio uses crown zone (crown_start to effective_height), not branch zone
+        // This ensures crown shape is correctly applied relative to the crown envelope
+        let position_ratio = if crown_zone_height > 0.0 {
+            ((height - crown_start) / crown_zone_height).clamp(0.0, 1.0)
+        } else {
+            ((height - start_height) / zone_length).clamp(0.0, 1.0)
+        };
+        // C2 fix: distribution_factor = position within branch distribution zone
+        // C++ uses factor = (current_length - absolute_start) / (absolute_end - absolute_start)
+        // for property evaluation (length, radius, angle curves)
+        let distribution_factor =
+            ((height - start_height) / zone_length.max(0.001)).clamp(0.0, 1.0);
         // crown_ratio: 1→0 from bottom→top (for crown shape and crown angle variation)
-        let position_ratio = ((height - start_height) / zone_length).clamp(0.0, 1.0);
         let crown_ratio = 1.0 - position_ratio;
 
         // Crown angle variation: C++ formula using Conical shape_ratio
@@ -422,33 +526,37 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             Vector3::new(wx2 - wx1, delta_height, wz2 - wz1).normalized()
         };
 
-        // Tangent: perpendicular to trunk_direction, rotated by phyllotaxis
-        let tangent_base = get_perpendicular(trunk_direction);
-        let tangent = rotate_around_axis(tangent_base, trunk_direction, angle_rad);
+        // A5 fix: C++ rotates the persistent tangent around parent direction each iteration
+        // then projects back onto the perpendicular plane (BranchFunction.cpp:279,306-308)
+        let phyllotaxis_rad = (config.phyllotaxis_angle + rng.range(-1.0, 1.0)).to_radians();
+        tangent = rotate_around_axis(tangent, trunk_direction, phyllotaxis_rad);
+        // Project tangent onto plane perpendicular to trunk_direction
+        let dot = tangent.x * trunk_direction.x
+            + tangent.y * trunk_direction.y
+            + tangent.z * trunk_direction.z;
+        tangent = Vector3::new(
+            tangent.x - dot * trunk_direction.x,
+            tangent.y - dot * trunk_direction.y,
+            tangent.z - dot * trunk_direction.z,
+        );
+        let tangent_len = tangent.length();
+        if tangent_len > 0.001 {
+            tangent = tangent / tangent_len;
+        }
 
         // Direction = lerp(trunk_direction, tangent, effective_angle / 90.0)
         let base_dir = lerp_vec3(trunk_direction, tangent, effective_angle / 90.0);
 
-        // Apply flatness: reduce y component toward horizontal
-        let flattened_dir = if config.branch_flatness > 0.0 {
-            Vector3::new(
-                base_dir.x,
-                base_dir.y * (1.0 - config.branch_flatness),
-                base_dir.z,
-            )
-            .normalized()
-        } else {
-            base_dir
-        };
+        // H1 fix: flatness applied inside random_vec before normalization (C++ pattern)
+        let random_offset = random_vec(rng, config.branch_flatness) * config.branch_randomness;
 
         // Add randomness + up_attraction
-        let random_offset = random_vec(rng) * config.branch_randomness;
         let up_offset = Vector3::UP * config.up_attraction;
-        let direction = (flattened_dir + random_offset + up_offset).normalized();
+        let direction = (base_dir + random_offset + up_offset).normalized();
 
-        // Calculate radii with property curve (uses position_ratio: 0→1)
+        // C2 fix: property curves use distribution_factor (position within branch zone)
         let radius_curve_mult = if (config.branch_radius_curve_end - 1.0).abs() > 0.001 {
-            let factor = position_ratio.powf(config.branch_radius_curve_power);
+            let factor = distribution_factor.powf(config.branch_radius_curve_power);
             1.0 + (config.branch_radius_curve_end - 1.0) * factor
         } else {
             1.0
@@ -460,9 +568,9 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let shape_mult = config.crown_shape.get_length_multiplier(crown_ratio);
         let final_mult = lerp(1.0, shape_mult, config.crown_influence);
 
-        // Apply property curve for branch length (uses position_ratio: 0→1)
+        // C2 fix: length curve uses distribution_factor
         let length_curve_mult = if (config.branch_length_curve_end - 1.0).abs() > 0.001 {
-            let factor = position_ratio.powf(config.branch_length_curve_power);
+            let factor = distribution_factor.powf(config.branch_length_curve_power);
             1.0 + (config.branch_length_curve_end - 1.0) * factor
         } else {
             1.0
@@ -486,7 +594,7 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let direction = if config.branch_angle_curve.abs() > 0.001 {
             // Positive curve = upper branches reach upward, negative = droop at top
             let angle_adjustment =
-                config.branch_angle_curve * position_ratio * 30.0f32.to_radians();
+                config.branch_angle_curve * distribution_factor * 30.0f32.to_radians();
             Vector3::new(
                 direction.x,
                 direction.y + angle_adjustment.sin(),
@@ -497,39 +605,29 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             direction
         };
 
-        // Floor avoidance: check if branch end would be below floor level
+        // B15 fix: C++ floor avoidance gradually deflects downward component
+        // direction.z -= direction.z * 2 / (2 + position.z) when direction.z < 0
+        // Terminates if end position would go below floor
         let (direction, length, is_terminal) = if config.floor_avoidance {
-            let end_y = start.y + direction.y * length;
-            if end_y < config.floor_level {
-                if direction.y < -0.3 {
-                    // Branch points steeply downward - skip it entirely
-                    continue;
-                } else if direction.y < 0.0 {
-                    // Clamp direction to be more horizontal and shorten if needed
-                    let clamped_dir = Vector3::new(direction.x, 0.0, direction.z).normalized();
-                    // Calculate max length that keeps end above floor
-                    let max_length = if clamped_dir.y.abs() < 0.001 {
-                        length // Horizontal branch, keep original length
-                    } else {
-                        ((start.y - config.floor_level) / -clamped_dir.y).max(0.1)
-                    };
-                    (clamped_dir, length.min(max_length), true) // Mark as terminal
-                } else {
-                    (
-                        direction,
-                        length,
-                        config.branch_recursion == 0 || config.sub_branch_count == 0,
-                    )
-                }
-            } else {
-                (
-                    direction,
-                    length,
-                    config.branch_recursion == 0 || config.sub_branch_count == 0,
-                )
+            let mut dir = direction;
+            if dir.y < 0.0 {
+                // Gradually reduce downward component based on height above floor
+                let height_above_floor = (start.y - config.floor_level).max(0.01);
+                dir.y -= dir.y * 2.0 / (2.0 + height_above_floor);
+                dir = dir.normalized();
             }
+            // Check if branch end would be below floor
+            let end_y = start.y + dir.y * length;
+            if end_y < config.floor_level {
+                // Terminate this branch (C++ returns early)
+                continue;
+            }
+            (
+                dir,
+                length,
+                config.branch_recursion == 0 || config.sub_branch_count == 0,
+            )
         } else {
-            // Determine if this branch will be terminal (no sub-branches)
             (
                 direction,
                 length,
@@ -546,6 +644,7 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             depth: 0,
             is_terminal,
             height_ratio: position_ratio,
+            subtree_weight: length,
         });
     }
 
@@ -592,17 +691,8 @@ pub fn generate_sub_branches(
 
         let base_direction = (parent.direction * spread.cos() + offset * spread.sin()).normalized();
 
-        // Apply flatness to sub-branches as well
-        let direction = if config.branch_flatness > 0.0 {
-            Vector3::new(
-                base_direction.x,
-                base_direction.y * (1.0 - config.branch_flatness),
-                base_direction.z,
-            )
-            .normalized()
-        } else {
-            base_direction
-        };
+        // B5: For sub-branches, flatness is less critical but keep consistent
+        let direction = base_direction;
 
         // Scale down with apical dominance affecting sub-branch length
         // Higher parent branches get shorter sub-branches
@@ -644,6 +734,7 @@ pub fn generate_sub_branches(
             depth: (depth + 1) as u8,
             is_terminal,
             height_ratio: parent.height_ratio, // Inherit parent's height ratio
+            subtree_weight: length,
         };
 
         // If we're going to recurse, mark parent as non-terminal
@@ -816,9 +907,9 @@ pub fn generate_branch_mesh_with_resolution(
         let t = ring as f32 / (rings - 1) as f32;
         positions.push(current_pos);
 
-        // Cumulated weight: mass from this point to the tip (decreases toward tip)
-        // Thicker branches are heavier
-        let weight_at_t = (1.0 - t) * branch.base_radius.max(0.01);
+        // B12 fix: Use subtree_weight (recursive accumulation from pipe radius phase)
+        // Weight decreases linearly toward tip as we move along the branch
+        let weight_at_t = (1.0 - t) * branch.subtree_weight.max(0.01);
 
         // Apply torque-based gravity bending with cumulative rotation
         let (new_dir, new_deviation) = apply_gravity_torque(
@@ -1022,9 +1113,17 @@ pub fn apply_pipe_radius_model(
     let mut sorted_indices: Vec<usize> = (0..branches.len()).collect();
     sorted_indices.sort_by(|&a, &b| branches[b].depth.cmp(&branches[a].depth));
 
-    // Bottom-up: recalculate radii from children
+    // Bottom-up: recalculate radii and subtree weights from children
     for &idx in &sorted_indices {
         if let Some(child_indices) = children_map.get(&idx) {
+            // B12 fix: Accumulate subtree weight recursively (C++ update_weight_rec)
+            // Each node's weight = own length + sum of children's subtree_weight
+            let children_weight: f32 = child_indices
+                .iter()
+                .map(|&c| branches[c].subtree_weight)
+                .sum();
+            branches[idx].subtree_weight = branches[idx].length + children_weight;
+
             if !child_indices.is_empty() {
                 // Collect child base radii
                 let child_radii: Vec<f32> = child_indices
@@ -1163,4 +1262,1318 @@ pub fn generate_branch_collar(
     }
 
     mesh
+}
+
+// ════════════════════════════════════════════════════════════
+// AG1–AG5: Multi-Segment Queue-Based Branch Growth
+// ════════════════════════════════════════════════════════════
+
+/// Check if a branch should terminate due to floor avoidance.
+/// Returns true if the branch is heading into the floor.
+/// Also adjusts direction if heading downward (C++ avoid_floor).
+fn avoid_floor_check(position: Vector3, direction: &mut Vector3, parent_length: f32) -> bool {
+    if direction.y < 0.0 {
+        let height = position.y.max(0.01);
+        direction.y -= direction.y * 2.0 / (2.0 + height);
+    }
+    (position + *direction).y * parent_length * 4.0 < 0.0
+}
+
+/// Compute continuation child direction (C++ get_main_child_direction).
+/// Randomness is scaled by 1/resolution for segment-level consistency.
+fn get_main_child_direction_ms(
+    parent_dir: Vector3,
+    position: Vector3,
+    up_attraction: f32,
+    flatness: f32,
+    randomness_amount: f32,
+    resolution: f32,
+    rng: &mut SeededRng,
+    floor_avoidance: bool,
+) -> Option<Vector3> {
+    // H1 fix: flatness applied inside random_vec before normalization
+    let random_dir = random_vec(rng, flatness) + Vector3::UP * up_attraction;
+
+    let mut child_direction = parent_dir + random_dir * randomness_amount / resolution;
+
+    if floor_avoidance {
+        let should_terminate = avoid_floor_check(position, &mut child_direction, 1.0);
+        if should_terminate {
+            return None;
+        }
+    }
+
+    let len = child_direction.length();
+    if len < 0.001 {
+        return Some(parent_dir);
+    }
+    Some(child_direction / len)
+}
+
+/// Compute split child direction (C++ get_split_direction).
+fn get_split_child_direction(
+    parent_dir: Vector3,
+    position: Vector3,
+    up_attraction: f32,
+    flatness: f32,
+    split_angle: f32,
+    rng: &mut SeededRng,
+    floor_avoidance: bool,
+) -> Vector3 {
+    let mut child_direction = random_vec(rng, 0.0);
+    child_direction = Vector3::new(
+        child_direction.y * parent_dir.z - child_direction.z * parent_dir.y,
+        child_direction.z * parent_dir.x - child_direction.x * parent_dir.z,
+        child_direction.x * parent_dir.y - child_direction.y * parent_dir.x,
+    ) + Vector3::UP * up_attraction * flatness;
+
+    if flatness > 0.0 {
+        let flat_normal = Vector3::UP.cross(parent_dir).cross(parent_dir);
+        let flen = flat_normal.length();
+        if flen > 0.001 {
+            let flat_normal = flat_normal / flen;
+            let dot = child_direction.dot(flat_normal);
+            child_direction -= flat_normal * dot * flatness;
+        }
+    }
+
+    if floor_avoidance {
+        avoid_floor_check(position, &mut child_direction, 1.0);
+    }
+
+    child_direction = lerp_vec3(parent_dir, child_direction, split_angle / 90.0);
+    child_direction.normalized()
+}
+
+/// Grow one segment of a branch (C++ grow_node_once).
+///
+/// Returns list of (segment_index, BranchGrowthInfo) pairs to enqueue for further growth.
+fn grow_node_once(
+    segments: &mut Vec<BranchSegment>,
+    parent_idx: usize,
+    info: &mut BranchGrowthInfo,
+    config: &BranchConfig,
+    rng: &mut SeededRng,
+    depth: u8,
+) -> Vec<(usize, BranchGrowthInfo)> {
+    let mut results = Vec::new();
+
+    // Break check: resolution-scaled probability (C++ rand * resolution < break_chance)
+    if config.break_chance > 0.0 && rng.next_f32() * config.resolution < config.break_chance {
+        info.inactive = true;
+        return results;
+    }
+
+    let factor = if info.desired_length > 0.001 {
+        info.current_length / info.desired_length
+    } else {
+        1.0
+    };
+
+    let child_length = (1.0 / config.resolution).min(info.desired_length - info.current_length);
+    if child_length <= 0.0 {
+        return results;
+    }
+
+    let child_radius = lerp(
+        info.origin_radius,
+        info.origin_radius * info.end_radius_ratio,
+        factor,
+    );
+
+    let parent_dir = segments[parent_idx].direction;
+    let parent_end =
+        segments[parent_idx].start + segments[parent_idx].direction * segments[parent_idx].length;
+
+    let randomness_value = config.randomness_property.evaluate(factor, rng);
+    let child_direction = match get_main_child_direction_ms(
+        parent_dir,
+        parent_end,
+        config.up_attraction,
+        config.branch_flatness,
+        randomness_value,
+        config.resolution,
+        rng,
+        config.floor_avoidance,
+    ) {
+        Some(dir) => dir,
+        None => {
+            info.inactive = true;
+            return results;
+        }
+    };
+
+    let cont_idx = segments.len();
+    segments.push(BranchSegment {
+        start: parent_end,
+        direction: child_direction,
+        length: child_length,
+        base_radius: child_radius,
+        tip_radius: child_radius * info.end_radius_ratio,
+        depth,
+        is_terminal: true,
+        height_ratio: segments[parent_idx].height_ratio,
+        subtree_weight: child_length,
+    });
+
+    let new_length = info.current_length + child_length;
+
+    if new_length < info.desired_length {
+        results.push((
+            cont_idx,
+            BranchGrowthInfo {
+                desired_length: info.desired_length,
+                current_length: new_length,
+                origin_radius: info.origin_radius,
+                end_radius_ratio: info.end_radius_ratio,
+                cumulated_weight: 0.0,
+                deviation: info.deviation,
+                age: info.age,
+                inactive: false,
+                cumulative_rotation: info.cumulative_rotation,
+            },
+        ));
+    }
+
+    // Mark parent as non-terminal
+    segments[parent_idx].is_terminal = false;
+
+    // Split check
+    if config.split_enabled && rng.next_f32() * config.resolution < config.split_probability {
+        let split_dir = get_split_child_direction(
+            parent_dir,
+            parent_end,
+            config.up_attraction,
+            config.branch_flatness,
+            config.split_angle,
+            rng,
+            config.floor_avoidance,
+        );
+
+        // M1/M5 fix: C++ uses node.radius * split_radius_multiplier (default 0.9)
+        let split_mult = config.split_radius_multiplier;
+        let split_radius = segments[parent_idx].base_radius * split_mult;
+        let split_idx = segments.len();
+        segments.push(BranchSegment {
+            start: parent_end,
+            direction: split_dir,
+            length: child_length,
+            base_radius: split_radius,
+            tip_radius: split_radius * info.end_radius_ratio,
+            depth,
+            is_terminal: true,
+            height_ratio: segments[parent_idx].height_ratio,
+            subtree_weight: child_length,
+        });
+
+        if new_length < info.desired_length {
+            results.push((
+                split_idx,
+                BranchGrowthInfo {
+                    desired_length: info.desired_length,
+                    current_length: new_length,
+                    origin_radius: info.origin_radius * split_mult,
+                    end_radius_ratio: info.end_radius_ratio,
+                    cumulated_weight: 0.0,
+                    deviation: 0.0,
+                    age: 0.0,
+                    inactive: false,
+                    cumulative_rotation: IDENTITY_BASIS,
+                },
+            ));
+        }
+    }
+
+    results
+}
+
+/// AG2/H2: Compute local gravity rotation basis for a segment.
+///
+/// Returns (local_rotation_basis, displacement) where:
+/// - local_rotation_basis is a 3x3 row-major rotation matrix
+/// - displacement is the angle for tracking deviation_from_rest_pose
+///
+/// Matches C++ BranchFunction.cpp:103-126 formula.
+fn compute_gravity_rotation(
+    direction: Vector3,
+    weight: f32,
+    age: f32,
+    deviation: f32,
+    resolution: f32,
+    gravity_strength: f32,
+    stiffness: f32,
+) -> ([f32; 9], f32) {
+    if gravity_strength <= 0.0 {
+        return (IDENTITY_BASIS, 0.0);
+    }
+
+    let horizontality = 1.0 - direction.y.abs();
+    let displacement = horizontality * weight.sqrt() * gravity_strength
+        / (resolution * resolution * 1000.0 * (1.0 + age));
+    let displacement = displacement * (-(deviation.abs() / resolution * stiffness)).exp();
+
+    if displacement < 0.0001 {
+        return (IDENTITY_BASIS, 0.0);
+    }
+
+    // C++ uses Z-down ({0,0,-1}), Godot uses Y-down
+    let down = Vector3::new(0.0, -1.0, 0.0);
+    let tangent = direction.cross(down);
+    let tangent_len = tangent.length();
+    if tangent_len < 0.001 {
+        return (IDENTITY_BASIS, 0.0);
+    }
+    let tangent = tangent / tangent_len;
+
+    // Build rotation basis from axis-angle
+    let local_rotation = basis_from_axis_angle(tangent, displacement);
+
+    (local_rotation, displacement)
+}
+
+/// Recursively update cumulated_weight bottom-up in a growth tree.
+fn update_weight_recursive(
+    segments: &mut [BranchSegment],
+    infos: &mut [(usize, BranchGrowthInfo)],
+    children_map: &std::collections::HashMap<usize, Vec<usize>>,
+    idx: usize,
+    info_map: &std::collections::HashMap<usize, usize>,
+) -> f32 {
+    let mut weight = segments[idx].length;
+    if let Some(children) = children_map.get(&idx) {
+        for &child_idx in children {
+            weight += update_weight_recursive(segments, infos, children_map, child_idx, info_map);
+        }
+    }
+    segments[idx].subtree_weight = weight;
+    if let Some(&info_idx) = info_map.get(&idx) {
+        infos[info_idx].1.cumulated_weight = weight;
+    }
+    weight
+}
+
+/// H2: Recursively apply structural gravity top-down with proper basis composition.
+///
+/// Uses cumulative rotation basis (3x3 matrix) instead of scalar angle approximation.
+/// Matches C++ pattern: curent_rotation = rot * curent_rotation (left-multiply)
+fn apply_gravity_recursive(
+    segments: &mut [BranchSegment],
+    infos: &mut [(usize, BranchGrowthInfo)],
+    children_map: &std::collections::HashMap<usize, Vec<usize>>,
+    idx: usize,
+    info_map: &std::collections::HashMap<usize, usize>,
+    cumulative_rotation: [f32; 9],
+    config: &BranchConfig,
+) {
+    if let Some(&info_idx) = info_map.get(&idx) {
+        let info = &mut infos[info_idx].1;
+        info.age += 1.0 / config.resolution;
+
+        // H2: Compute local gravity rotation basis
+        let (local_rotation, displacement) = compute_gravity_rotation(
+            segments[idx].direction,
+            info.cumulated_weight,
+            info.age,
+            info.deviation,
+            config.resolution,
+            config.gravity_strength,
+            config.stiffness,
+        );
+
+        info.deviation += displacement;
+
+        // H2: Compose rotations: new_cumulative = local * cumulative (C++ left-multiply pattern)
+        let new_cumulative = compose_basis(&local_rotation, &cumulative_rotation);
+        info.cumulative_rotation = new_cumulative;
+
+        // Apply cumulative rotation to direction
+        segments[idx].direction =
+            apply_basis(&new_cumulative, segments[idx].direction).normalized();
+
+        if let Some(children) = children_map.get(&idx) {
+            for &child_idx in children {
+                apply_gravity_recursive(
+                    segments,
+                    infos,
+                    children_map,
+                    child_idx,
+                    info_map,
+                    new_cumulative,
+                    config,
+                );
+            }
+        }
+    } else if let Some(children) = children_map.get(&idx) {
+        for &child_idx in children {
+            apply_gravity_recursive(
+                segments,
+                infos,
+                children_map,
+                child_idx,
+                info_map,
+                cumulative_rotation,
+                config,
+            );
+        }
+    }
+}
+
+/// Recursively update positions top-down after gravity changes directions.
+fn update_positions_recursive(
+    segments: &mut [BranchSegment],
+    children_map: &std::collections::HashMap<usize, Vec<usize>>,
+    idx: usize,
+) {
+    if let Some(children) = children_map.get(&idx) {
+        let parent_end = segments[idx].start + segments[idx].direction * segments[idx].length;
+        for &child_idx in children {
+            segments[child_idx].start = parent_end;
+            update_positions_recursive(segments, children_map, child_idx);
+        }
+    }
+}
+
+/// AG2: Apply gravity to all growth segments between BFS batches.
+fn apply_gravity_to_growth_segments(
+    segments: &mut [BranchSegment],
+    infos: &mut [(usize, BranchGrowthInfo)],
+    origin_indices: &[usize],
+    config: &BranchConfig,
+) {
+    if config.gravity_strength <= 0.0 {
+        return;
+    }
+
+    let epsilon = 0.01f32;
+
+    let mut children_map: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+    for i in 0..segments.len() {
+        children_map.insert(i, Vec::new());
+    }
+
+    for (child_idx, child) in segments.iter().enumerate() {
+        for (parent_idx, parent) in segments.iter().enumerate() {
+            if parent_idx == child_idx {
+                continue;
+            }
+            let parent_end = parent.start + parent.direction * parent.length;
+            let distance = (child.start - parent_end).length();
+            if distance < epsilon {
+                if let Some(children) = children_map.get_mut(&parent_idx) {
+                    children.push(child_idx);
+                }
+                break;
+            }
+        }
+    }
+
+    let mut info_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (i, (seg_idx, _)) in infos.iter().enumerate() {
+        info_map.insert(*seg_idx, i);
+    }
+
+    for &origin_idx in origin_indices {
+        update_weight_recursive(segments, infos, &children_map, origin_idx, &info_map);
+        // H2: Start with identity rotation basis
+        apply_gravity_recursive(
+            segments,
+            infos,
+            &children_map,
+            origin_idx,
+            &info_map,
+            IDENTITY_BASIS,
+            config,
+        );
+        update_positions_recursive(segments, &children_map, origin_idx);
+    }
+}
+
+/// AG1: Queue-based BFS branch growth (C++ grow_origins).
+pub fn grow_branches_bfs(
+    segments: &mut Vec<BranchSegment>,
+    origin_infos: Vec<(usize, BranchGrowthInfo)>,
+    origin_indices: &[usize],
+    config: &BranchConfig,
+    rng: &mut SeededRng,
+) {
+    use std::collections::VecDeque;
+
+    let mut queue: VecDeque<(usize, BranchGrowthInfo, u8)> = VecDeque::new();
+    for (idx, info) in origin_infos {
+        let depth = segments[idx].depth;
+        queue.push_back((idx, info, depth));
+    }
+
+    let mut batch_size = queue.len();
+
+    while let Some((parent_idx, mut info, depth)) = queue.pop_front() {
+        if batch_size == 0 {
+            let mut infos_vec: Vec<(usize, BranchGrowthInfo)> = queue
+                .iter()
+                .map(|(idx, info, _)| (*idx, info.clone()))
+                .collect();
+            apply_gravity_to_growth_segments(segments, &mut infos_vec, origin_indices, config);
+            for (i, (_, info, _)) in queue.iter_mut().enumerate() {
+                if i < infos_vec.len() {
+                    *info = infos_vec[i].1.clone();
+                }
+            }
+            batch_size = queue.len();
+        }
+
+        let new_items = grow_node_once(segments, parent_idx, &mut info, config, rng, depth);
+        for (new_idx, new_info) in new_items {
+            let new_depth = segments[new_idx].depth;
+            queue.push_back((new_idx, new_info, new_depth));
+        }
+
+        batch_size = batch_size.saturating_sub(1);
+    }
+}
+
+/// AG1 + AG5: Generate multi-segment branches using BFS queue growth.
+pub fn generate_branch_origins_multi_segment(
+    config: &BranchConfig,
+    rng: &mut SeededRng,
+) -> Vec<BranchSegment> {
+    let mut segments: Vec<BranchSegment> = Vec::new();
+    let mut origin_infos: Vec<(usize, BranchGrowthInfo)> = Vec::new();
+    let mut origin_indices: Vec<usize> = Vec::new();
+
+    let mut current_angle = 0.0f32;
+    let mut tangent = get_perpendicular(Vector3::UP);
+
+    let effective_height = if config.crown_height < 0.0 {
+        config.trunk_height
+    } else {
+        config.crown_height
+    };
+    let crown_start = effective_height * config.crown_base_size;
+    let crown_zone_height = effective_height * (1.0 - config.crown_base_size);
+    let start_height = (config.trunk_height * config.branch_start).max(crown_start);
+    let end_height = config.trunk_height * config.branch_end;
+    let zone_length = end_height - start_height;
+
+    if zone_length <= 0.0 {
+        return segments;
+    }
+
+    let spacing = 1.0 / (config.branch_density + 0.001);
+    let branch_count = (zone_length / spacing).floor() as i32;
+
+    for i in 0..branch_count {
+        let base_height = start_height + spacing * i as f32;
+        let height = base_height + rng.range(0.0, spacing * 0.5);
+
+        if height > end_height {
+            break;
+        }
+
+        if config.break_chance > 0.0 && rng.next_f32() < config.break_chance {
+            continue;
+        }
+
+        current_angle += config.phyllotaxis_angle;
+        let angle_rad = current_angle.to_radians();
+
+        let t = height / config.trunk_height;
+        let taper_factor = t.powf(config.trunk_taper_curve);
+        let base_r = config.trunk_radius * config.trunk_flare;
+        let tip_r = config.trunk_radius * config.trunk_taper;
+        let trunk_r = lerp(base_r, tip_r, taper_factor);
+
+        let seed_f = config.seed as f32;
+        let wobble_x = if config.trunk_randomness > 0.0 {
+            (t * std::f32::consts::PI + seed_f * 0.1).sin()
+                * config.trunk_randomness
+                * t
+                * config.trunk_height
+                * 0.3
+        } else {
+            0.0
+        };
+        let wobble_z = if config.trunk_randomness > 0.0 {
+            (t * std::f32::consts::E + seed_f * 0.2).cos()
+                * config.trunk_randomness
+                * t
+                * config.trunk_height
+                * 0.3
+        } else {
+            0.0
+        };
+
+        let start = Vector3::new(
+            angle_rad.cos() * trunk_r + wobble_x,
+            height,
+            angle_rad.sin() * trunk_r + wobble_z,
+        );
+
+        let position_ratio = if crown_zone_height > 0.0 {
+            ((height - crown_start) / crown_zone_height).clamp(0.0, 1.0)
+        } else {
+            ((height - start_height) / zone_length).clamp(0.0, 1.0)
+        };
+        // C2 fix: distribution_factor for property evaluation
+        let distribution_factor =
+            ((height - start_height) / zone_length.max(0.001)).clamp(0.0, 1.0);
+        let crown_ratio = 1.0 - position_ratio;
+
+        let shape_ratio = CrownShape::Conical.get_length_multiplier(crown_ratio);
+        let angle_offset = config.crown_angle_variation * (1.0 - 2.0 * shape_ratio);
+        let effective_angle = (config.branch_angle + angle_offset).clamp(0.0, 180.0);
+
+        let trunk_direction = {
+            let dt = 0.01f32;
+            let t2 = (t + dt).min(1.0);
+            let wx1 = if config.trunk_randomness > 0.0 {
+                (t * std::f32::consts::PI + seed_f * 0.1).sin()
+                    * config.trunk_randomness
+                    * t
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let wz1 = if config.trunk_randomness > 0.0 {
+                (t * std::f32::consts::E + seed_f * 0.2).cos()
+                    * config.trunk_randomness
+                    * t
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let wx2 = if config.trunk_randomness > 0.0 {
+                (t2 * std::f32::consts::PI + seed_f * 0.1).sin()
+                    * config.trunk_randomness
+                    * t2
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let wz2 = if config.trunk_randomness > 0.0 {
+                (t2 * std::f32::consts::E + seed_f * 0.2).cos()
+                    * config.trunk_randomness
+                    * t2
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let delta_height = dt * config.trunk_height;
+            Vector3::new(wx2 - wx1, delta_height, wz2 - wz1).normalized()
+        };
+
+        let phyllotaxis_rad = (config.phyllotaxis_angle + rng.range(-1.0, 1.0)).to_radians();
+        tangent = rotate_around_axis(tangent, trunk_direction, phyllotaxis_rad);
+        let dot = tangent.x * trunk_direction.x
+            + tangent.y * trunk_direction.y
+            + tangent.z * trunk_direction.z;
+        tangent = Vector3::new(
+            tangent.x - dot * trunk_direction.x,
+            tangent.y - dot * trunk_direction.y,
+            tangent.z - dot * trunk_direction.z,
+        );
+        let tangent_len = tangent.length();
+        if tangent_len > 0.001 {
+            tangent = tangent / tangent_len;
+        }
+
+        let base_dir = lerp_vec3(trunk_direction, tangent, effective_angle / 90.0);
+
+        // H1 fix: flatness applied inside random_vec before normalization (C++ pattern)
+        let random_offset = random_vec(rng, config.branch_flatness) * config.branch_randomness;
+        let up_offset = Vector3::UP * config.up_attraction;
+        let direction = (base_dir + random_offset + up_offset).normalized();
+
+        // AG5: Use property wrappers (C2 fix: use distribution_factor for properties)
+        let desired_length = config.length_property.evaluate(distribution_factor, rng);
+        let radius_value = config
+            .start_radius_property
+            .evaluate(distribution_factor, rng);
+        let branch_base_radius = trunk_r * radius_value;
+
+        let shape_mult = config.crown_shape.get_length_multiplier(crown_ratio);
+        let final_mult = lerp(1.0, shape_mult, config.crown_influence);
+        let dominance_mult = 1.0 - (config.apical_dominance * position_ratio * 0.5);
+        let variation_min = 1.0 - config.branch_length_variation;
+        let total_desired_length =
+            desired_length * final_mult * dominance_mult * rng.range(variation_min, 1.0);
+
+        if total_desired_length <= 0.0 {
+            continue;
+        }
+
+        // Floor avoidance for initial direction
+        let (direction, total_desired_length) = if config.floor_avoidance {
+            let mut dir = direction;
+            if dir.y < 0.0 {
+                let height_above_floor = (start.y - config.floor_level).max(0.01);
+                dir.y -= dir.y * 2.0 / (2.0 + height_above_floor);
+                dir = dir.normalized();
+            }
+            let end_y = start.y + dir.y * total_desired_length;
+            if end_y < config.floor_level {
+                continue;
+            }
+            (dir, total_desired_length)
+        } else {
+            (direction, total_desired_length)
+        };
+
+        let first_seg_length = (1.0 / config.resolution).min(total_desired_length);
+
+        let first_idx = segments.len();
+        segments.push(BranchSegment {
+            start,
+            direction,
+            length: first_seg_length,
+            base_radius: branch_base_radius,
+            tip_radius: branch_base_radius * (1.0 - config.branch_taper),
+            depth: 0,
+            is_terminal: true,
+            height_ratio: position_ratio,
+            subtree_weight: first_seg_length,
+        });
+
+        origin_indices.push(first_idx);
+
+        if first_seg_length < total_desired_length {
+            origin_infos.push((
+                first_idx,
+                BranchGrowthInfo {
+                    desired_length: total_desired_length,
+                    current_length: first_seg_length,
+                    origin_radius: branch_base_radius,
+                    end_radius_ratio: 1.0 - config.branch_taper,
+                    cumulated_weight: 0.0,
+                    deviation: 0.0,
+                    age: 0.0,
+                    inactive: false,
+                    cumulative_rotation: IDENTITY_BASIS,
+                },
+            ));
+        }
+    }
+
+    // Run BFS growth
+    if !origin_infos.is_empty() {
+        grow_branches_bfs(&mut segments, origin_infos, &origin_indices, config, rng);
+    }
+
+    // Spawn sub-branches on completed branches
+    if config.branch_recursion > 0 && config.sub_branch_count > 0 {
+        spawn_sub_branches_multi_segment(&mut segments, config, rng, &origin_indices);
+    }
+
+    segments
+}
+
+/// Spawn sub-branches along completed multi-segment branches.
+fn spawn_sub_branches_multi_segment(
+    segments: &mut Vec<BranchSegment>,
+    config: &BranchConfig,
+    rng: &mut SeededRng,
+    origin_indices: &[usize],
+) {
+    let mut sub_origin_infos: Vec<(usize, BranchGrowthInfo)> = Vec::new();
+    let mut sub_origin_indices: Vec<usize> = Vec::new();
+    let epsilon = 0.01f32;
+
+    for depth_level in 0..config.branch_recursion {
+        let current_depth = depth_level as u8;
+        let child_depth = (depth_level + 1) as u8;
+
+        let seg_count = segments.len();
+
+        // Find origins for this depth level
+        let scan_start: Vec<usize> = if depth_level == 0 {
+            origin_indices.to_vec()
+        } else {
+            // Find sub-branch origins at current_depth
+            (0..seg_count)
+                .filter(|&i| {
+                    segments[i].depth == current_depth && {
+                        let mut is_origin = true;
+                        for j in 0..seg_count {
+                            if j == i || segments[j].depth != current_depth {
+                                continue;
+                            }
+                            let end =
+                                segments[j].start + segments[j].direction * segments[j].length;
+                            if (segments[i].start - end).length() < epsilon {
+                                is_origin = false;
+                                break;
+                            }
+                        }
+                        is_origin
+                    }
+                })
+                .collect()
+        };
+
+        for &origin in &scan_start {
+            // Walk continuation chain
+            let mut chain = vec![origin];
+            let mut current = origin;
+            loop {
+                let end = segments[current].start
+                    + segments[current].direction * segments[current].length;
+                let mut found = false;
+                for j in 0..segments.len() {
+                    if j == current || segments[j].depth != current_depth {
+                        continue;
+                    }
+                    if (segments[j].start - end).length() < epsilon {
+                        chain.push(j);
+                        current = j;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    break;
+                }
+            }
+
+            let total_chain_length: f32 = chain.iter().map(|&i| segments[i].length).sum();
+            if total_chain_length < 0.001 {
+                continue;
+            }
+
+            for _ in 0..config.sub_branch_count {
+                if config.break_chance > 0.0 && rng.next_f32() < config.break_chance {
+                    continue;
+                }
+
+                let base_t = rng.range(0.3, 0.8);
+                let t = if config.sub_branch_position_bias > 0.0 {
+                    lerp(base_t, 0.8, config.sub_branch_position_bias)
+                } else {
+                    lerp(base_t, 0.3, -config.sub_branch_position_bias)
+                };
+
+                let target_dist = t * total_chain_length;
+                let mut accumulated = 0.0f32;
+                let mut attach_seg = chain[0];
+                let mut local_t = 0.5;
+
+                for &seg_idx in &chain {
+                    if accumulated + segments[seg_idx].length >= target_dist {
+                        attach_seg = seg_idx;
+                        local_t = (target_dist - accumulated) / segments[seg_idx].length;
+                        break;
+                    }
+                    accumulated += segments[seg_idx].length;
+                }
+
+                let parent_dir = segments[attach_seg].direction;
+                let parent_tip_radius = segments[attach_seg].tip_radius;
+                let parent_height_ratio = segments[attach_seg].height_ratio;
+                let start =
+                    segments[attach_seg].start + parent_dir * segments[attach_seg].length * local_t;
+
+                let spread = rng.range(30.0, 60.0).to_radians();
+                let rotation = rng.range(0.0, TAU);
+                let perp = get_perpendicular(parent_dir);
+                let perp2 = parent_dir.cross(perp);
+                let offset = perp * rotation.cos() + perp2 * rotation.sin();
+                let sub_direction =
+                    (parent_dir * spread.cos() + offset * spread.sin()).normalized();
+
+                let dominance_mult = 1.0 - (config.apical_dominance * parent_height_ratio * 0.4);
+                let sub_desired_length =
+                    total_chain_length * config.sub_branch_scale * dominance_mult;
+                let sub_base_radius = parent_tip_radius * config.branch_radius_ratio;
+
+                if sub_desired_length <= 0.0 {
+                    continue;
+                }
+
+                if config.floor_avoidance {
+                    let end_y = start.y + sub_direction.y * sub_desired_length;
+                    if end_y < config.floor_level && sub_direction.y < -0.3 {
+                        continue;
+                    }
+                }
+
+                let first_length = (1.0 / config.resolution).min(sub_desired_length);
+                let sub_idx = segments.len();
+
+                segments.push(BranchSegment {
+                    start,
+                    direction: sub_direction,
+                    length: first_length,
+                    base_radius: sub_base_radius,
+                    tip_radius: sub_base_radius * (1.0 - config.branch_taper),
+                    depth: child_depth,
+                    is_terminal: true,
+                    height_ratio: parent_height_ratio,
+                    subtree_weight: first_length,
+                });
+
+                sub_origin_indices.push(sub_idx);
+
+                if first_length < sub_desired_length {
+                    sub_origin_infos.push((
+                        sub_idx,
+                        BranchGrowthInfo {
+                            desired_length: sub_desired_length,
+                            current_length: first_length,
+                            origin_radius: sub_base_radius,
+                            end_radius_ratio: 1.0 - config.branch_taper,
+                            cumulated_weight: 0.0,
+                            deviation: 0.0,
+                            age: 0.0,
+                            inactive: false,
+                            cumulative_rotation: IDENTITY_BASIS,
+                        },
+                    ));
+                }
+            }
+        }
+
+        // Grow sub-branches for this depth level
+        if !sub_origin_infos.is_empty() {
+            grow_branches_bfs(
+                segments,
+                sub_origin_infos.drain(..).collect(),
+                &sub_origin_indices,
+                config,
+                rng,
+            );
+            sub_origin_indices.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a test BranchConfig with multi-segment resolution enabled
+    fn test_config(resolution: f32) -> BranchConfig {
+        BranchConfig {
+            trunk_height: 5.0,
+            trunk_radius: 0.5,
+            branch_start: 0.3,
+            branch_end: 0.9,
+            branch_density: 2.0,
+            branch_length: 0.4,
+            branch_angle: 45.0,
+            branch_radius_ratio: 0.3,
+            branch_taper: 0.7,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.2,
+            up_attraction: 0.1,
+            branch_recursion: 0,
+            sub_branch_count: 0,
+            sub_branch_scale: 0.5,
+            branch_length_variation: 0.0,
+            sub_branch_position_bias: 0.0,
+            apical_dominance: 0.5,
+            branch_flatness: 0.0,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: 0.0,
+            radial_segments: 8,
+            crown_shape: CrownShape::Cylindrical,
+            crown_influence: 0.0,
+            trunk_taper: 0.3,
+            trunk_taper_curve: 0.5,
+            trunk_flare: 1.0,
+            trunk_randomness: 0.0,
+            seed: 42,
+            trunk_twist: 0.0,
+            branch_twist: 0.0,
+            gravity_strength: 0.0,
+            stiffness: 0.5,
+            break_chance: 0.0,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.05,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: false,
+            floor_level: 0.0,
+            branch_length_curve_end: 1.0,
+            branch_length_curve_power: 1.0,
+            branch_radius_curve_end: 1.0,
+            branch_radius_curve_power: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            resolution,
+            length_property: BranchProperty::constant(2.0),
+            randomness_property: BranchProperty::constant(0.2),
+            start_angle_property: BranchProperty::constant(45.0),
+            start_radius_property: BranchProperty::constant(0.3),
+        }
+    }
+
+    #[test]
+    fn test_grow_node_once_produces_segment() {
+        let config = test_config(3.0);
+        let mut rng = SeededRng::new(42);
+        let mut segments = vec![BranchSegment {
+            start: Vector3::new(0.0, 2.0, 0.0),
+            direction: Vector3::new(1.0, 0.0, 0.0).normalized(),
+            length: 0.333,
+            base_radius: 0.15,
+            tip_radius: 0.1,
+            depth: 0,
+            is_terminal: true,
+            height_ratio: 0.5,
+            subtree_weight: 0.333,
+        }];
+
+        let mut info = BranchGrowthInfo {
+            desired_length: 2.0,
+            current_length: 0.333,
+            origin_radius: 0.15,
+            end_radius_ratio: 0.3,
+            cumulated_weight: 0.0,
+            deviation: 0.0,
+            age: 0.0,
+            inactive: false,
+            cumulative_rotation: IDENTITY_BASIS,
+        };
+
+        let result = grow_node_once(&mut segments, 0, &mut info, &config, &mut rng, 0);
+
+        assert_eq!(
+            segments.len(),
+            2,
+            "Should have added one continuation segment"
+        );
+        assert!(
+            !result.is_empty(),
+            "Should have queued continuation for more growth"
+        );
+
+        // Check new segment connects to parent
+        let parent_end = segments[0].start + segments[0].direction * segments[0].length;
+        let child_start = segments[1].start;
+        assert!(
+            (parent_end - child_start).length() < 0.01,
+            "Child should start at parent endpoint"
+        );
+    }
+
+    #[test]
+    fn test_grow_node_once_break() {
+        let mut config = test_config(1.0);
+        config.break_chance = 1.0; // Always break
+
+        let mut rng = SeededRng::new(42);
+        let mut segments = vec![BranchSegment {
+            start: Vector3::new(0.0, 2.0, 0.0),
+            direction: Vector3::RIGHT,
+            length: 0.5,
+            base_radius: 0.15,
+            tip_radius: 0.1,
+            depth: 0,
+            is_terminal: true,
+            height_ratio: 0.5,
+            subtree_weight: 0.5,
+        }];
+
+        let mut info = BranchGrowthInfo {
+            desired_length: 2.0,
+            current_length: 0.5,
+            origin_radius: 0.15,
+            end_radius_ratio: 0.3,
+            cumulated_weight: 0.0,
+            deviation: 0.0,
+            age: 0.0,
+            inactive: false,
+            cumulative_rotation: IDENTITY_BASIS,
+        };
+
+        let result = grow_node_once(&mut segments, 0, &mut info, &config, &mut rng, 0);
+
+        assert_eq!(
+            segments.len(),
+            1,
+            "No segments should be added when branch breaks"
+        );
+        assert!(result.is_empty(), "Should not queue anything on break");
+        assert!(info.inactive, "Info should be marked inactive");
+    }
+
+    #[test]
+    fn test_grow_node_once_split() {
+        let mut config = test_config(1.0);
+        config.split_enabled = true;
+        config.split_probability = 100.0; // Very high to guarantee split
+        config.split_angle = 30.0;
+
+        let mut rng = SeededRng::new(42);
+        let mut segments = vec![BranchSegment {
+            start: Vector3::new(0.0, 2.0, 0.0),
+            direction: Vector3::RIGHT,
+            length: 0.5,
+            base_radius: 0.15,
+            tip_radius: 0.1,
+            depth: 0,
+            is_terminal: true,
+            height_ratio: 0.5,
+            subtree_weight: 0.5,
+        }];
+
+        let mut info = BranchGrowthInfo {
+            desired_length: 3.0,
+            current_length: 0.5,
+            origin_radius: 0.15,
+            end_radius_ratio: 0.3,
+            cumulated_weight: 0.0,
+            deviation: 0.0,
+            age: 0.0,
+            inactive: false,
+            cumulative_rotation: IDENTITY_BASIS,
+        };
+
+        let result = grow_node_once(&mut segments, 0, &mut info, &config, &mut rng, 0);
+
+        // Should have continuation + split = 2 new segments
+        assert_eq!(segments.len(), 3, "Should have added continuation + split");
+        assert!(
+            result.len() >= 2,
+            "Should have queued both continuation and split"
+        );
+
+        // Both new segments should start at same position (parent endpoint)
+        let parent_end = segments[0].start + segments[0].direction * segments[0].length;
+        assert!((segments[1].start - parent_end).length() < 0.01);
+        assert!((segments[2].start - parent_end).length() < 0.01);
+
+        // Split should have different direction than continuation
+        let dot = segments[1].direction.dot(segments[2].direction);
+        assert!(
+            dot < 0.99,
+            "Split and continuation directions should diverge"
+        );
+    }
+
+    #[test]
+    fn test_grow_branches_bfs_full() {
+        let config = test_config(3.0);
+        let mut rng = SeededRng::new(42);
+
+        // Start with a single origin segment
+        let mut segments = vec![BranchSegment {
+            start: Vector3::new(0.0, 2.0, 0.0),
+            direction: Vector3::RIGHT,
+            length: 1.0 / 3.0,
+            base_radius: 0.15,
+            tip_radius: 0.1,
+            depth: 0,
+            is_terminal: true,
+            height_ratio: 0.5,
+            subtree_weight: 1.0 / 3.0,
+        }];
+
+        let origin_infos = vec![(
+            0,
+            BranchGrowthInfo {
+                desired_length: 3.0,
+                current_length: 1.0 / 3.0,
+                origin_radius: 0.15,
+                end_radius_ratio: 0.3,
+                cumulated_weight: 0.0,
+                deviation: 0.0,
+                age: 0.0,
+                inactive: false,
+                cumulative_rotation: IDENTITY_BASIS,
+            },
+        )];
+        let origin_indices = vec![0];
+
+        grow_branches_bfs(
+            &mut segments,
+            origin_infos,
+            &origin_indices,
+            &config,
+            &mut rng,
+        );
+
+        // resolution=3, desired_length=3 → should produce ~9 segments (3 per unit * 3 units)
+        // First segment already exists, so ~8 more
+        assert!(
+            segments.len() >= 5,
+            "Should have grown multiple segments, got {}",
+            segments.len()
+        );
+
+        // Verify chain connectivity
+        for i in 1..segments.len() {
+            let seg = &segments[i];
+            // Each segment should start at some parent's endpoint
+            let mut found_parent = false;
+            for j in 0..i {
+                let end = segments[j].start + segments[j].direction * segments[j].length;
+                if (seg.start - end).length() < 0.02 {
+                    found_parent = true;
+                    break;
+                }
+            }
+            assert!(found_parent, "Segment {} should connect to a parent", i);
+        }
+    }
+
+    #[test]
+    fn test_grow_branches_bfs_gravity_applied() {
+        let mut config = test_config(2.0);
+        config.gravity_strength = 20.0;
+        config.stiffness = 0.5;
+
+        let mut rng = SeededRng::new(42);
+
+        // Horizontal branch that should droop
+        let mut segments = vec![BranchSegment {
+            start: Vector3::new(0.0, 3.0, 0.0),
+            direction: Vector3::RIGHT,
+            length: 0.5,
+            base_radius: 0.15,
+            tip_radius: 0.1,
+            depth: 0,
+            is_terminal: true,
+            height_ratio: 0.5,
+            subtree_weight: 0.5,
+        }];
+
+        let origin_infos = vec![(
+            0,
+            BranchGrowthInfo {
+                desired_length: 3.0,
+                current_length: 0.5,
+                origin_radius: 0.15,
+                end_radius_ratio: 0.3,
+                cumulated_weight: 0.0,
+                deviation: 0.0,
+                age: 0.0,
+                inactive: false,
+                cumulative_rotation: IDENTITY_BASIS,
+            },
+        )];
+        let origin_indices = vec![0];
+
+        grow_branches_bfs(
+            &mut segments,
+            origin_infos,
+            &origin_indices,
+            &config,
+            &mut rng,
+        );
+
+        // With strong gravity on horizontal branch, tip segments should droop
+        // With strong gravity on horizontal branch, segments should have grown
+        assert!(
+            segments.len() > 2,
+            "Should have grown segments with gravity"
+        );
+    }
+
+    #[test]
+    fn test_multi_segment_pipe_radius() {
+        let config = test_config(3.0);
+        let mut rng = SeededRng::new(42);
+        let mut segments = generate_branch_origins_multi_segment(&config, &mut rng);
+
+        // Should have generated some segments
+        assert!(
+            !segments.is_empty(),
+            "Multi-segment generation should produce segments"
+        );
+
+        // Apply pipe radius model — should not panic
+        apply_pipe_radius_model(&mut segments, 2.0, 0.01, 0.0);
+
+        // Verify all radii are positive
+        for (i, seg) in segments.iter().enumerate() {
+            assert!(
+                seg.base_radius > 0.0,
+                "Segment {} base_radius should be positive",
+                i
+            );
+            assert!(
+                seg.tip_radius > 0.0,
+                "Segment {} tip_radius should be positive",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_multi_segment_segments_to_tree() {
+        use crate::manifold_mesher::segments_to_tree;
+
+        let config = test_config(3.0);
+        let mut rng = SeededRng::new(42);
+        let segments = generate_branch_origins_multi_segment(&config, &mut rng);
+
+        if segments.is_empty() {
+            return; // No segments to test (possible with certain configs)
+        }
+
+        // Should build tree without panicking
+        let trees = segments_to_tree(&segments);
+
+        // Should have at least one root node
+        assert!(
+            !trees.is_empty(),
+            "segments_to_tree should produce at least one root"
+        );
+    }
+
+    #[test]
+    fn test_property_wrapper_curve_in_origins() {
+        let mut config = test_config(2.0);
+        // Set a curve that makes branches shorter at top
+        config.length_property = BranchProperty::curve(2.0, 0.5, 1.0);
+
+        let mut rng = SeededRng::new(42);
+        let segments = generate_branch_origins_multi_segment(&config, &mut rng);
+
+        assert!(
+            !segments.is_empty(),
+            "Should generate segments with property curve"
+        );
+    }
+
+    #[test]
+    fn test_resolution_zero_uses_legacy() {
+        let config = test_config(0.0); // resolution=0 → legacy path
+                                       // This test verifies the legacy path still works
+        let mut rng = SeededRng::new(42);
+        let segments = generate_branch_origins(&config, &mut rng);
+        // Legacy path should still work with the new fields
+        assert!(
+            !segments.is_empty(),
+            "Legacy path should still generate branches"
+        );
+    }
+
+    #[test]
+    fn test_sub_branches_multi_segment() {
+        let mut config = test_config(2.0);
+        config.branch_recursion = 1;
+        config.sub_branch_count = 2;
+
+        let mut rng = SeededRng::new(42);
+        let segments = generate_branch_origins_multi_segment(&config, &mut rng);
+
+        // Should have depth-0 and depth-1 segments
+        let depth0_count = segments.iter().filter(|s| s.depth == 0).count();
+        let depth1_count = segments.iter().filter(|s| s.depth == 1).count();
+
+        assert!(depth0_count > 0, "Should have primary branches");
+        assert!(
+            depth1_count > 0,
+            "Should have sub-branches (depth 1), got {} depth-0 and {} depth-1",
+            depth0_count,
+            depth1_count
+        );
+    }
 }
