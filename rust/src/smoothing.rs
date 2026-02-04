@@ -32,6 +32,41 @@ pub fn laplacian_smooth(vertices: &mut [Vector3], indices: &[i32], iterations: u
     }
 }
 
+/// Perform weighted Laplacian smoothing on mesh vertices.
+///
+/// Like `laplacian_smooth` but with per-vertex weight factors.
+/// Useful for applying stronger smoothing at branch junctions
+/// while preserving detail on thin branches.
+///
+/// # Arguments
+/// * `vertices` - Mutable slice of vertex positions to smooth
+/// * `indices` - Triangle indices defining mesh connectivity
+/// * `weights` - Per-vertex weight (0.0 = no smoothing, 1.0 = full smoothing)
+/// * `iterations` - Number of smoothing passes
+/// * `factor` - Base blend factor per iteration
+pub fn laplacian_smooth_weighted(
+    vertices: &mut [Vector3],
+    indices: &[i32],
+    weights: &[f32],
+    iterations: u32,
+    factor: f32,
+) {
+    if vertices.is_empty() || indices.is_empty() || iterations == 0 {
+        return;
+    }
+    if weights.len() != vertices.len() {
+        // Fallback to uniform if weights don't match
+        laplacian_smooth(vertices, indices, iterations, factor);
+        return;
+    }
+
+    let adjacency = build_adjacency_map(vertices.len(), indices);
+
+    for _ in 0..iterations {
+        smooth_pass_weighted(vertices, &adjacency, factor, weights);
+    }
+}
+
 /// Build a map from vertex index to its neighboring vertex indices.
 /// Two vertices are neighbors if they share an edge in any triangle.
 fn build_adjacency_map(vertex_count: usize, indices: &[i32]) -> HashMap<usize, Vec<usize>> {
@@ -98,6 +133,47 @@ fn smooth_pass(vertices: &mut [Vector3], adjacency: &HashMap<usize, Vec<usize>>,
         .collect();
 
     // Apply new positions
+    for (i, new_pos) in new_positions.into_iter().enumerate() {
+        vertices[i] = new_pos;
+    }
+}
+
+/// Perform a single weighted smoothing pass
+fn smooth_pass_weighted(
+    vertices: &mut [Vector3],
+    adjacency: &HashMap<usize, Vec<usize>>,
+    factor: f32,
+    weights: &[f32],
+) {
+    let new_positions: Vec<Vector3> = vertices
+        .iter()
+        .enumerate()
+        .map(|(i, &vertex)| {
+            let weight = weights.get(i).copied().unwrap_or(1.0);
+            if weight < 0.001 {
+                return vertex; // Skip vertices with negligible weight
+            }
+
+            if let Some(neighbors) = adjacency.get(&i) {
+                if neighbors.is_empty() {
+                    return vertex;
+                }
+
+                let sum: Vector3 = neighbors
+                    .iter()
+                    .map(|&n| vertices[n])
+                    .fold(Vector3::ZERO, |acc, v| acc + v);
+                let barycenter = sum / neighbors.len() as f32;
+
+                // Apply weighted blend
+                let effective_factor = factor * weight;
+                vertex.lerp(barycenter, effective_factor)
+            } else {
+                vertex
+            }
+        })
+        .collect();
+
     for (i, new_pos) in new_positions.into_iter().enumerate() {
         vertices[i] = new_pos;
     }

@@ -1,9 +1,10 @@
+use godot::classes::base_material_3d::{CullMode, Feature, TextureParam, Transparency};
 use godot::classes::mesh::{ArrayType, PrimitiveType};
-use godot::classes::{ArrayMesh, Engine, MeshInstance3D, StandardMaterial3D};
+use godot::classes::{ArrayMesh, Engine, MeshInstance3D, StandardMaterial3D, Texture2D};
 use godot::prelude::*;
 
 use crate::branch::{
-    apply_pipe_radius_model, generate_branch_collar, generate_branch_mesh_with_config,
+    apply_pipe_radius_model, generate_branch_collar, generate_branch_mesh_with_resolution,
     generate_branch_origins, generate_split_branches, generate_sub_branches, BranchConfig,
     BranchSegment, MeshData, SeededRng,
 };
@@ -15,7 +16,7 @@ use crate::foliage::{
 use crate::growth::{
     convert_growth_to_branches, create_trunk_structure, simulate_growth, GrowthConfig,
 };
-use crate::smoothing::{laplacian_smooth, recalculate_normals};
+use crate::smoothing::{laplacian_smooth, laplacian_smooth_weighted, recalculate_normals};
 use crate::tree_preset::{GrowthPreset, GrowthPresetValues, TreePreset, TreePresetValues};
 
 /// How the trunk terminates at the top
@@ -209,6 +210,27 @@ pub struct PixyTree {
     #[init(val = 0.15)]
     branch_length_variation: f32,
 
+    /// Branch length curve: ratio at top vs bottom of crown (1.0 = uniform, 0.1 = much shorter at top)
+    /// When != 1.0, overrides flat branch_length with a height-dependent curve
+    #[export(range = (0.1, 2.0, 0.05))]
+    #[init(val = 1.0)]
+    branch_length_curve_end: f32,
+
+    /// Branch length curve power (1.0 = linear, 2.0 = quadratic, 0.5 = sqrt)
+    #[export(range = (0.1, 3.0, 0.1))]
+    #[init(val = 1.0)]
+    branch_length_curve_power: f32,
+
+    /// Branch radius curve: ratio at top vs bottom of crown (1.0 = uniform)
+    #[export(range = (0.1, 2.0, 0.05))]
+    #[init(val = 1.0)]
+    branch_radius_curve_end: f32,
+
+    /// Branch radius curve power
+    #[export(range = (0.1, 3.0, 0.1))]
+    #[init(val = 1.0)]
+    branch_radius_curve_power: f32,
+
     /// Sub-branch position bias (-1 = base, 0 = uniform, 1 = tip)
     #[export(range = (-1.0, 1.0, 0.1))]
     #[init(val = 0.0)]
@@ -334,6 +356,12 @@ pub struct PixyTree {
     #[export(range = (8.0, 32.0, 1.0))]
     #[init(val = 16)]
     max_radial_segments: i32,
+
+    /// Length resolution: rings per unit length along branches (0 = legacy fixed rings)
+    /// Higher values = smoother curves on longer branches, fewer wasted segments on short ones
+    #[export(range = (0.0, 8.0, 0.5))]
+    #[init(val = 0.0)]
+    length_resolution: f32,
 
     // ═══════════════════════════════════════════
     // Pipe Radius Model (Da Vinci's Rule)
@@ -466,6 +494,59 @@ pub struct PixyTree {
     foliage_color: Color,
 
     // ═══════════════════════════════════════════
+    // Texture Settings
+    // ═══════════════════════════════════════════
+    /// Bark albedo/diffuse texture
+    #[export]
+    bark_texture: Option<Gd<Texture2D>>,
+
+    /// Bark normal map texture
+    #[export]
+    bark_normal_map: Option<Gd<Texture2D>>,
+
+    /// Bark roughness map texture
+    #[export]
+    bark_roughness_map: Option<Gd<Texture2D>>,
+
+    /// Leaf texture (with alpha for transparency)
+    #[export]
+    foliage_texture: Option<Gd<Texture2D>>,
+
+    /// Leaf normal map texture
+    #[export]
+    foliage_normal_map: Option<Gd<Texture2D>>,
+
+    /// UV tiling scale for bark textures
+    #[export]
+    #[init(val = Vector3::new(1.0, 1.0, 1.0))]
+    bark_uv_scale: Vector3,
+
+    /// UV tiling scale for foliage textures
+    #[export]
+    #[init(val = Vector3::new(1.0, 1.0, 1.0))]
+    foliage_uv_scale: Vector3,
+
+    /// Trunk roughness when no texture assigned (0 = smooth, 1 = rough)
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.8)]
+    trunk_roughness: f32,
+
+    /// Trunk metallic value (0 = non-metallic, 1 = metallic)
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.0)]
+    trunk_metallic: f32,
+
+    /// Foliage roughness (0 = smooth/glossy, 1 = rough/matte)
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.5)]
+    foliage_roughness: f32,
+
+    /// Foliage metallic value
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.0)]
+    foliage_metallic: f32,
+
+    // ═══════════════════════════════════════════
     // Generation
     // ═══════════════════════════════════════════
     #[export]
@@ -575,6 +656,31 @@ pub struct PixyTree {
     #[export(range = (0.0, 0.5, 0.05))]
     #[init(val = 0.15)]
     flower_threshold: f32,
+
+    /// Enable dynamic cut threshold adaptation (auto-balances branch count)
+    #[export]
+    #[init(val = false)]
+    dynamic_cut_threshold: bool,
+
+    /// Extension taper: radius ratio when extending (0.95 = original, 0.8 = previous)
+    #[export(range = (0.5, 1.0, 0.05))]
+    #[init(val = 0.95)]
+    growth_extension_taper: f32,
+
+    /// Split taper: radius ratio at bifurcation (0.9 = original, 0.6 = previous)
+    #[export(range = (0.3, 1.0, 0.05))]
+    #[init(val = 0.9)]
+    growth_split_taper: f32,
+
+    /// Enable secondary growth (radius thickening with age)
+    #[export]
+    #[init(val = false)]
+    secondary_growth: bool,
+
+    /// Use competitive vigor distribution (original formula)
+    #[export]
+    #[init(val = false)]
+    competitive_vigor: bool,
 
     // Internal state (not exported)
     #[init(val = None)]
@@ -686,6 +792,10 @@ impl PixyTree {
         self.sub_branch_count = 2;
         self.sub_branch_scale = 0.5;
         self.branch_length_variation = 0.15;
+        self.branch_length_curve_end = 1.0;
+        self.branch_length_curve_power = 1.0;
+        self.branch_radius_curve_end = 1.0;
+        self.branch_radius_curve_power = 1.0;
         self.sub_branch_position_bias = 0.0;
         self.apical_dominance = 0.5;
         self.branch_flatness = 0.0;
@@ -725,6 +835,9 @@ impl PixyTree {
         self.min_radial_segments = 4;
         self.max_radial_segments = 16;
 
+        // Adaptive Resolution
+        self.length_resolution = 0.0;
+
         // Pipe Radius Model
         self.pipe_radius_enabled = false;
         self.pipe_radius_exponent = 2.0;
@@ -758,6 +871,19 @@ impl PixyTree {
         self.trunk_color = Color::from_rgb(0.545, 0.271, 0.075); // Saddle Brown
         self.foliage_color = Color::from_rgb(0.133, 0.545, 0.133); // Forest Green
 
+        // Textures - reset to None (use colors as fallback)
+        self.bark_texture = None;
+        self.bark_normal_map = None;
+        self.bark_roughness_map = None;
+        self.foliage_texture = None;
+        self.foliage_normal_map = None;
+        self.bark_uv_scale = Vector3::new(1.0, 1.0, 1.0);
+        self.foliage_uv_scale = Vector3::new(1.0, 1.0, 1.0);
+        self.trunk_roughness = 0.8;
+        self.trunk_metallic = 0.0;
+        self.foliage_roughness = 0.5;
+        self.foliage_metallic = 0.0;
+
         // L-System Growth
         self.growth_enabled = false;
         self.growth_preset = GrowthPreset::Custom;
@@ -775,6 +901,11 @@ impl PixyTree {
         self.growth_randomness = 0.2;
         self.flowering_enabled = false;
         self.flower_threshold = 0.15;
+        self.dynamic_cut_threshold = false;
+        self.growth_extension_taper = 0.95;
+        self.growth_split_taper = 0.9;
+        self.secondary_growth = false;
+        self.competitive_vigor = false;
     }
 
     fn apply_preset_values(&mut self, values: &TreePresetValues) {
@@ -890,6 +1021,12 @@ impl PixyTree {
         hash = hash.wrapping_add((self.branch_angle_curve.to_bits() as u64).wrapping_mul(317));
         hash = hash.wrapping_add((self.crown_angle_variation.to_bits() as u64).wrapping_mul(373));
         hash = hash.wrapping_add((self.branch_length_variation.to_bits() as u64).wrapping_mul(337));
+        hash = hash.wrapping_add((self.branch_length_curve_end.to_bits() as u64).wrapping_mul(743));
+        hash =
+            hash.wrapping_add((self.branch_length_curve_power.to_bits() as u64).wrapping_mul(751));
+        hash = hash.wrapping_add((self.branch_radius_curve_end.to_bits() as u64).wrapping_mul(757));
+        hash =
+            hash.wrapping_add((self.branch_radius_curve_power.to_bits() as u64).wrapping_mul(761));
         hash =
             hash.wrapping_add((self.sub_branch_position_bias.to_bits() as u64).wrapping_mul(347));
         hash = hash.wrapping_add((self.apical_dominance.to_bits() as u64).wrapping_mul(349));
@@ -966,6 +1103,11 @@ impl PixyTree {
         hash = hash.wrapping_add((self.growth_randomness.to_bits() as u64).wrapping_mul(503));
         hash = hash.wrapping_add((self.flowering_enabled as u64).wrapping_mul(509));
         hash = hash.wrapping_add((self.flower_threshold.to_bits() as u64).wrapping_mul(521));
+        hash = hash.wrapping_add((self.dynamic_cut_threshold as u64).wrapping_mul(709));
+        hash = hash.wrapping_add((self.growth_extension_taper.to_bits() as u64).wrapping_mul(719));
+        hash = hash.wrapping_add((self.growth_split_taper.to_bits() as u64).wrapping_mul(727));
+        hash = hash.wrapping_add((self.secondary_growth as u64).wrapping_mul(733));
+        hash = hash.wrapping_add((self.competitive_vigor as u64).wrapping_mul(739));
         // Floor avoidance parameters
         hash = hash.wrapping_add((self.floor_avoidance as u64).wrapping_mul(523));
         hash = hash.wrapping_add((self.floor_level.to_bits() as u64).wrapping_mul(541));
@@ -978,10 +1120,39 @@ impl PixyTree {
         hash = hash.wrapping_add((self.resolution_scale.to_bits() as u64).wrapping_mul(571));
         hash = hash.wrapping_add((self.min_radial_segments as u64).wrapping_mul(577));
         hash = hash.wrapping_add((self.max_radial_segments as u64).wrapping_mul(587));
+        hash = hash.wrapping_add((self.length_resolution.to_bits() as u64).wrapping_mul(701));
         // Pipe radius parameters
         hash = hash.wrapping_add((self.pipe_radius_enabled as u64).wrapping_mul(593));
         hash = hash.wrapping_add((self.pipe_radius_exponent.to_bits() as u64).wrapping_mul(599));
         hash = hash.wrapping_add((self.pipe_radius_min.to_bits() as u64).wrapping_mul(601));
+        // Texture parameters (use instance_id as proxy for texture change detection)
+        if let Some(ref tex) = self.bark_texture {
+            hash = hash.wrapping_add((tex.instance_id().to_i64() as u64).wrapping_mul(607));
+        }
+        if let Some(ref tex) = self.bark_normal_map {
+            hash = hash.wrapping_add((tex.instance_id().to_i64() as u64).wrapping_mul(613));
+        }
+        if let Some(ref tex) = self.bark_roughness_map {
+            hash = hash.wrapping_add((tex.instance_id().to_i64() as u64).wrapping_mul(617));
+        }
+        if let Some(ref tex) = self.foliage_texture {
+            hash = hash.wrapping_add((tex.instance_id().to_i64() as u64).wrapping_mul(619));
+        }
+        if let Some(ref tex) = self.foliage_normal_map {
+            hash = hash.wrapping_add((tex.instance_id().to_i64() as u64).wrapping_mul(631));
+        }
+        // UV scale parameters
+        hash = hash.wrapping_add((self.bark_uv_scale.x.to_bits() as u64).wrapping_mul(641));
+        hash = hash.wrapping_add((self.bark_uv_scale.y.to_bits() as u64).wrapping_mul(643));
+        hash = hash.wrapping_add((self.bark_uv_scale.z.to_bits() as u64).wrapping_mul(647));
+        hash = hash.wrapping_add((self.foliage_uv_scale.x.to_bits() as u64).wrapping_mul(653));
+        hash = hash.wrapping_add((self.foliage_uv_scale.y.to_bits() as u64).wrapping_mul(659));
+        hash = hash.wrapping_add((self.foliage_uv_scale.z.to_bits() as u64).wrapping_mul(661));
+        // Material properties
+        hash = hash.wrapping_add((self.trunk_roughness.to_bits() as u64).wrapping_mul(673));
+        hash = hash.wrapping_add((self.trunk_metallic.to_bits() as u64).wrapping_mul(677));
+        hash = hash.wrapping_add((self.foliage_roughness.to_bits() as u64).wrapping_mul(683));
+        hash = hash.wrapping_add((self.foliage_metallic.to_bits() as u64).wrapping_mul(691));
         hash
     }
 
@@ -1081,12 +1252,13 @@ impl PixyTree {
             } else {
                 default_branch_segments
             };
-            let stub_mesh = generate_branch_mesh_with_config(
+            let stub_mesh = generate_branch_mesh_with_resolution(
                 stub,
                 stub_segments,
                 self.branch_twist,
                 self.gravity_strength,
                 self.stiffness,
+                self.length_resolution,
             );
             mesh_data.extend(&stub_mesh);
         }
@@ -1121,24 +1293,38 @@ impl PixyTree {
             } else {
                 default_branch_segments
             };
-            let branch_mesh = generate_branch_mesh_with_config(
+            let branch_mesh = generate_branch_mesh_with_resolution(
                 branch,
                 branch_seg_count,
                 self.branch_twist,
                 self.gravity_strength,
                 self.stiffness,
+                self.length_resolution,
             );
             mesh_data.extend(&branch_mesh);
         }
 
         // 4. Apply mesh smoothing if enabled
         if self.smooth_enabled && self.smooth_iterations > 0 {
-            laplacian_smooth(
-                &mut mesh_data.vertices,
-                &mesh_data.indices,
-                self.smooth_iterations as u32,
-                self.smooth_factor,
-            );
+            if !mesh_data.smooth_weights.is_empty()
+                && mesh_data.smooth_weights.len() == mesh_data.vertices.len()
+            {
+                // Use weighted smoothing (stronger at junctions, lighter on branches)
+                laplacian_smooth_weighted(
+                    &mut mesh_data.vertices,
+                    &mesh_data.indices,
+                    &mesh_data.smooth_weights,
+                    self.smooth_iterations as u32,
+                    self.smooth_factor,
+                );
+            } else {
+                laplacian_smooth(
+                    &mut mesh_data.vertices,
+                    &mesh_data.indices,
+                    self.smooth_iterations as u32,
+                    self.smooth_factor,
+                );
+            }
             // Recalculate normals after smoothing
             recalculate_normals(
                 &mesh_data.vertices,
@@ -1240,6 +1426,10 @@ impl PixyTree {
             split_radius_threshold: self.split_radius_threshold,
             floor_avoidance: self.floor_avoidance,
             floor_level: self.floor_level,
+            branch_length_curve_end: self.branch_length_curve_end,
+            branch_length_curve_power: self.branch_length_curve_power,
+            branch_radius_curve_end: self.branch_radius_curve_end,
+            branch_radius_curve_power: self.branch_radius_curve_power,
         }
     }
 
@@ -1611,9 +1801,60 @@ impl PixyTree {
         mesh
     }
 
-    fn create_color_material(color: Color) -> Gd<StandardMaterial3D> {
+    /// Create trunk/bark material with optional PBR textures
+    fn create_trunk_material(&self) -> Gd<StandardMaterial3D> {
         let mut material = StandardMaterial3D::new_gd();
-        material.set_albedo(color);
+        material.set_albedo(self.trunk_color);
+
+        // Apply bark albedo texture if provided
+        if let Some(ref texture) = self.bark_texture {
+            material.set_texture(TextureParam::ALBEDO, texture);
+        }
+
+        // Apply bark normal map if provided
+        if let Some(ref normal) = self.bark_normal_map {
+            material.set_texture(TextureParam::NORMAL, normal);
+            material.set_feature(Feature::NORMAL_MAPPING, true);
+        }
+
+        // Apply bark roughness map if provided, otherwise use scalar roughness
+        if let Some(ref roughness) = self.bark_roughness_map {
+            material.set_texture(TextureParam::ROUGHNESS, roughness);
+        } else {
+            material.set_roughness(self.trunk_roughness);
+        }
+
+        material.set_metallic(self.trunk_metallic);
+        material.set_uv1_scale(self.bark_uv_scale);
+
+        material
+    }
+
+    /// Create foliage material with optional textures and alpha transparency
+    fn create_foliage_material(&self) -> Gd<StandardMaterial3D> {
+        let mut material = StandardMaterial3D::new_gd();
+        material.set_albedo(self.foliage_color);
+
+        // Apply foliage albedo texture if provided (with alpha scissor for transparency)
+        if let Some(ref texture) = self.foliage_texture {
+            material.set_texture(TextureParam::ALBEDO, texture);
+            material.set_transparency(Transparency::ALPHA_SCISSOR);
+            material.set_alpha_scissor_threshold(0.5);
+        }
+
+        // Apply foliage normal map if provided
+        if let Some(ref normal) = self.foliage_normal_map {
+            material.set_texture(TextureParam::NORMAL, normal);
+            material.set_feature(Feature::NORMAL_MAPPING, true);
+        }
+
+        material.set_roughness(self.foliage_roughness);
+        material.set_metallic(self.foliage_metallic);
+        material.set_uv1_scale(self.foliage_uv_scale);
+
+        // Double-sided rendering for leaves
+        material.set_cull_mode(CullMode::DISABLED);
+
         material
     }
 
@@ -1622,7 +1863,7 @@ impl PixyTree {
         instance.set_mesh(&mesh);
         instance.set_name("TrunkMesh");
 
-        let material = Self::create_color_material(self.trunk_color);
+        let material = self.create_trunk_material();
         instance.set_surface_override_material(0, &material);
 
         self.base_mut().add_child(&instance);
@@ -1634,7 +1875,7 @@ impl PixyTree {
         instance.set_mesh(&mesh);
         instance.set_name("FoliageMesh");
 
-        let material = Self::create_color_material(self.foliage_color);
+        let material = self.create_foliage_material();
         instance.set_surface_override_material(0, &material);
 
         self.base_mut().add_child(&instance);
@@ -1702,6 +1943,12 @@ impl PixyTree {
             trunk_radius: self.trunk_radius,
             trunk_taper: self.trunk_taper,
             seed: self.seed,
+            dynamic_cut_threshold: self.dynamic_cut_threshold,
+            extension_taper: self.growth_extension_taper,
+            split_taper: self.growth_split_taper,
+            lateral_radius_ratio: 0.8,
+            secondary_growth: self.secondary_growth,
+            competitive_vigor: self.competitive_vigor,
         };
 
         // Apply growth preset if not Custom
@@ -1775,12 +2022,13 @@ impl PixyTree {
             } else {
                 default_branch_mesh_segments
             };
-            let branch_mesh = generate_branch_mesh_with_config(
+            let branch_mesh = generate_branch_mesh_with_resolution(
                 branch,
                 branch_seg_count,
                 self.branch_twist,
                 self.gravity_strength,
                 self.stiffness,
+                self.length_resolution,
             );
             mesh_data.extend(&branch_mesh);
             all_branches.push(branch.clone());
@@ -1788,13 +2036,24 @@ impl PixyTree {
 
         // 7. Apply mesh smoothing if enabled
         if self.smooth_enabled && self.smooth_iterations > 0 {
-            laplacian_smooth(
-                &mut mesh_data.vertices,
-                &mesh_data.indices,
-                self.smooth_iterations as u32,
-                self.smooth_factor,
-            );
-            // Recalculate normals after smoothing
+            if !mesh_data.smooth_weights.is_empty()
+                && mesh_data.smooth_weights.len() == mesh_data.vertices.len()
+            {
+                laplacian_smooth_weighted(
+                    &mut mesh_data.vertices,
+                    &mesh_data.indices,
+                    &mesh_data.smooth_weights,
+                    self.smooth_iterations as u32,
+                    self.smooth_factor,
+                );
+            } else {
+                laplacian_smooth(
+                    &mut mesh_data.vertices,
+                    &mesh_data.indices,
+                    self.smooth_iterations as u32,
+                    self.smooth_factor,
+                );
+            }
             recalculate_normals(
                 &mesh_data.vertices,
                 &mesh_data.indices,

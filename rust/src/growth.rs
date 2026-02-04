@@ -177,6 +177,20 @@ pub struct GrowthConfig {
 
     /// Random seed
     pub seed: i32,
+
+    // Advanced growth parity parameters
+    /// Enable dynamic cut threshold adaptation (auto-balance branch count)
+    pub dynamic_cut_threshold: bool,
+    /// Extension taper ratio (original: 0.95, previous: 0.8)
+    pub extension_taper: f32,
+    /// Split taper ratio (original: 0.9, previous: 0.6)
+    pub split_taper: f32,
+    /// Lateral radius ratio (original: 0.8)
+    pub lateral_radius_ratio: f32,
+    /// Enable secondary growth (radius thickening with age)
+    pub secondary_growth: bool,
+    /// Use competitive vigor ratio formula (matching original)
+    pub competitive_vigor: bool,
 }
 
 impl Default for GrowthConfig {
@@ -204,6 +218,12 @@ impl Default for GrowthConfig {
             trunk_radius: 0.5,
             trunk_taper: 0.3,
             seed: 42,
+            dynamic_cut_threshold: false,
+            extension_taper: 0.95,
+            split_taper: 0.9,
+            lateral_radius_ratio: 0.8,
+            secondary_growth: false,
+            competitive_vigor: false,
         }
     }
 }
@@ -237,14 +257,20 @@ pub fn create_trunk_structure(config: &GrowthConfig) -> GrowthNode {
 }
 
 /// Calculate vigor ratios for all nodes in the tree (recursive)
-/// Returns the total vigor requested by this subtree
-fn calculate_vigor_ratios(node: &mut GrowthNode, apical_dominance: f32) -> f32 {
+/// Returns the total vigor (light flux) requested by this subtree.
+///
+/// When `competitive` is true, uses the competitive ratio formula from the
+/// original modular_tree:
+///   vigor_ratio_i = 1 - (t * L0) / (t * L0 + (1-t) * Li + eps)
+/// where t = apical_dominance, L0 = leader flux, Li = lateral flux.
+/// This creates strong apical dominance hierarchies.
+fn calculate_vigor_ratios(node: &mut GrowthNode, apical_dominance: f32, competitive: bool) -> f32 {
     // Base vigor request depends on node type
     let base_request = match node.info.node_type {
         GrowthNodeType::Meristem => 1.0,
-        GrowthNodeType::Dormant => 0.3, // Dormant buds request less
+        GrowthNodeType::Dormant => 0.3,
         GrowthNodeType::Cut | GrowthNodeType::Flower => 0.0,
-        _ => 0.5, // Interior nodes
+        _ => 0.5,
     };
 
     if node.children.is_empty() {
@@ -252,36 +278,73 @@ fn calculate_vigor_ratios(node: &mut GrowthNode, apical_dominance: f32) -> f32 {
         return base_request;
     }
 
-    // Calculate children's requests
-    let mut child_requests: Vec<f32> = Vec::with_capacity(node.children.len());
+    // Calculate children's flux requests
+    let mut child_fluxes: Vec<f32> = Vec::with_capacity(node.children.len());
     for child in &mut node.children {
-        let request = calculate_vigor_ratios(child, apical_dominance);
-        child_requests.push(request);
+        let flux = calculate_vigor_ratios(child, apical_dominance, competitive);
+        child_fluxes.push(flux);
     }
 
-    let total_child_request: f32 = child_requests.iter().sum();
+    let total_child_flux: f32 = child_fluxes.iter().sum();
 
-    if total_child_request > 0.0 {
-        // Apply apical dominance: first child (leader) gets more
-        // Higher apical_dominance means stronger leader preference
-        for (i, (child, &request)) in node
-            .children
-            .iter_mut()
-            .zip(child_requests.iter())
-            .enumerate()
-        {
-            let is_leader = i == 0;
-            let dominance_factor = if is_leader {
-                1.0 + apical_dominance
-            } else {
-                1.0 - apical_dominance * 0.5
-            };
-            child.info.vigor_ratio = (request / total_child_request) * dominance_factor;
+    if total_child_flux > 0.0 {
+        if competitive && child_fluxes.len() > 1 {
+            // Competitive vigor ratio (original modular_tree formula)
+            // Leader (index 0) gets remaining after laterals are suppressed
+            let t = apical_dominance;
+            let eps = 0.0001;
+            let leader_flux = child_fluxes[0];
+
+            let mut remaining_flux = total_child_flux;
+
+            // Calculate lateral ratios first
+            for (i, (child, &flux)) in node
+                .children
+                .iter_mut()
+                .zip(child_fluxes.iter())
+                .enumerate()
+            {
+                if i == 0 {
+                    continue; // Handle leader after
+                }
+
+                if child.info.node_type == GrowthNodeType::Dormant {
+                    // Dormant buds get fixed suppression
+                    child.info.vigor_ratio = 0.3;
+                } else {
+                    // Competitive ratio: higher t → lateral approaches 0
+                    let ratio =
+                        1.0 - (t * leader_flux) / (t * leader_flux + (1.0 - t) * flux + eps);
+                    child.info.vigor_ratio = ratio;
+                }
+                remaining_flux -= flux * child.info.vigor_ratio;
+            }
+
+            // Leader gets remaining proportion
+            if total_child_flux > 0.0 {
+                node.children[0].info.vigor_ratio = (remaining_flux / total_child_flux).max(0.1);
+            }
+        } else {
+            // Simple additive dominance (original Rust behavior)
+            for (i, (child, &request)) in node
+                .children
+                .iter_mut()
+                .zip(child_fluxes.iter())
+                .enumerate()
+            {
+                let is_leader = i == 0;
+                let dominance_factor = if is_leader {
+                    1.0 + apical_dominance
+                } else {
+                    1.0 - apical_dominance * 0.5
+                };
+                child.info.vigor_ratio = (request / total_child_flux) * dominance_factor;
+            }
         }
     }
 
     node.info.vigor_ratio = base_request;
-    base_request + total_child_request
+    base_request + total_child_flux
 }
 
 /// Distribute vigor from parent to children
@@ -356,7 +419,8 @@ fn apply_growth_rules_recursive(
                     * vigor
                     * rng.range(0.8, 1.2)
                     * (1.0 + config.gravitropism);
-                let new_radius = node.radius * 0.8;
+                // Use configurable extension taper (original: 0.95, previous: 0.8)
+                let new_radius = node.radius * config.extension_taper;
 
                 let mut extension = GrowthNode::new(
                     node.end_position(),
@@ -376,6 +440,14 @@ fn apply_growth_rules_recursive(
                 new_children.push(extension);
             }
 
+            // Secondary growth: radius thickening with age (logistic curve)
+            if config.secondary_growth && vigor >= config.grow_threshold {
+                // Models lignification: radius = (1 - exp(-age * 0.01) + 0.01) * 0.5
+                let age_radius = (1.0 - (-(node.info.age as f32) * 0.01).exp() + 0.01) * 0.5;
+                let min_radius = node.radius;
+                node.radius = min_radius + age_radius * min_radius;
+            }
+
             // Check for splitting (bifurcation) - only if we grew
             if vigor >= config.split_threshold && node.children.len() + new_children.len() < 2 {
                 let split_angle = 30.0f32.to_radians();
@@ -391,7 +463,8 @@ fn apply_growth_rules_recursive(
                 .normalized();
 
                 let split_length = config.branch_length * vigor * 0.8 * rng.range(0.7, 1.0);
-                let split_radius = node.radius * 0.6;
+                // Use configurable split taper (original: 0.9, previous: 0.6)
+                let split_radius = node.radius * config.split_taper;
 
                 let mut split_branch = GrowthNode::new(
                     node.end_position(),
@@ -527,7 +600,8 @@ fn create_lateral_buds(node: &mut GrowthNode, config: &GrowthConfig, rng: &mut S
 
         // Calculate radius at this position (with taper)
         let tip_radius = node.radius * config.trunk_taper;
-        let bud_radius = (node.radius * (1.0 - t) + tip_radius * t) * 0.3;
+        let parent_radius_at_t = node.radius * (1.0 - t) + tip_radius * t;
+        let bud_radius = parent_radius_at_t * config.lateral_radius_ratio;
 
         let mut bud = GrowthNode::new(
             bud_position,
@@ -549,29 +623,122 @@ fn create_lateral_buds(node: &mut GrowthNode, config: &GrowthConfig, rng: &mut S
     }
 }
 
-/// Apply gravity bending to growth nodes
+/// Calculate cumulated weight for each node in the tree (bottom-up)
+/// Returns the total weight of this subtree
+fn calculate_branch_weight(node: &mut GrowthNode) -> f32 {
+    let self_weight = node.length * node.radius.max(0.01);
+
+    let children_weight: f32 = node.children.iter_mut().map(calculate_branch_weight).sum();
+
+    self_weight + children_weight
+}
+
+/// Apply torque-based gravity bending to growth nodes with cumulative rotation.
+///
+/// Uses physics-based model where:
+/// - Weight accumulates bottom-up through the tree
+/// - Torque = weight * lever_arm (horizontal distance to center of mass)
+/// - Bendiness decreases with age and vigor (lignification model)
+/// - Rotation accumulates down the hierarchy
 fn apply_gravity_to_growth(node: &mut GrowthNode, config: &GrowthConfig) {
     if config.gravity_strength <= 0.0 {
         return;
     }
 
-    // Apply gravity based on age and vigor (older, weaker branches droop more)
-    let age_factor = (node.info.age as f32 / 10.0).min(1.0);
-    let vigor_factor = 1.0 - node.info.vigor.min(1.0);
-    let stiffness_factor = 1.0 - config.stiffness;
+    // First pass: calculate weights bottom-up
+    calculate_branch_weight(node);
 
-    let bend_amount = config.gravity_strength * age_factor * vigor_factor * stiffness_factor;
+    // Second pass: apply gravity with cumulative rotation top-down
+    apply_gravity_recursive(node, config, 0.0);
+}
 
-    if bend_amount > 0.01 {
-        let mut new_direction = node.direction;
-        new_direction.y -= bend_amount;
-        node.direction = new_direction.normalized();
+/// Recursive gravity application with cumulative deviation tracking
+fn apply_gravity_recursive(node: &mut GrowthNode, config: &GrowthConfig, parent_deviation: f32) {
+    // Skip trunk (Ignored) nodes - they don't bend
+    if node.info.node_type == GrowthNodeType::Ignored {
+        for child in &mut node.children {
+            apply_gravity_recursive(child, config, parent_deviation);
+        }
+        return;
     }
 
-    // Recurse to children
+    // Horizontality: vertical branches are immune, horizontal ones bend
+    let horizontality = 1.0 - node.direction.y.abs();
+
+    // Weight-based torque using branch dimensions
+    let self_weight = node.length * node.radius.max(0.01);
+    let children_weight: f32 = node
+        .children
+        .iter()
+        .map(|c| c.length * c.radius.max(0.01))
+        .sum();
+    let total_weight = self_weight + children_weight;
+
+    // Bendiness: young or weak branches bend more (exponential decay with age + vigor)
+    // Models lignification - older wood is stiffer
+    let bendiness = (-(node.info.age as f32 / 2.0 + node.info.vigor)).exp();
+
+    // Stiffness resistance based on accumulated deviation
+    let stiffness_resistance = if config.stiffness > 0.0 {
+        (-parent_deviation.abs() / (config.stiffness * 2.0 + 0.001)).exp()
+    } else {
+        1.0
+    };
+
+    // Compute bend angle
+    let bend_angle = horizontality
+        * total_weight.sqrt()
+        * bendiness
+        * stiffness_resistance
+        * config.gravity_strength
+        * 0.5; // Scale factor for reasonable angles
+
+    let new_deviation = parent_deviation + bend_angle;
+
+    if bend_angle > 0.001 {
+        // Find rotation axis perpendicular to direction in gravity plane
+        let down = Vector3::new(0.0, -1.0, 0.0);
+        let tangent = node.direction.cross(down);
+        let tangent_len = tangent.length();
+
+        if tangent_len > 0.001 {
+            let tangent = tangent / tangent_len;
+
+            // Apply rotation using Rodrigues' formula
+            let cos_a = bend_angle.cos();
+            let sin_a = bend_angle.sin();
+            let d = node.direction;
+            let dot = d.x * tangent.x + d.y * tangent.y + d.z * tangent.z;
+            let cross = Vector3::new(
+                tangent.y * d.z - tangent.z * d.y,
+                tangent.z * d.x - tangent.x * d.z,
+                tangent.x * d.y - tangent.y * d.x,
+            );
+
+            node.direction = Vector3::new(
+                d.x * cos_a + cross.x * sin_a + tangent.x * dot * (1.0 - cos_a),
+                d.y * cos_a + cross.y * sin_a + tangent.y * dot * (1.0 - cos_a),
+                d.z * cos_a + cross.z * sin_a + tangent.z * dot * (1.0 - cos_a),
+            )
+            .normalized();
+        }
+    }
+
+    // Recurse to children with accumulated deviation
     for child in &mut node.children {
-        apply_gravity_to_growth(child, config);
+        apply_gravity_recursive(child, config, new_deviation);
     }
+}
+
+/// Count total light flux (vigor requests) from all meristems
+fn count_meristem_flux(node: &GrowthNode) -> f32 {
+    let self_flux = if node.info.node_type == GrowthNodeType::Meristem {
+        node.info.vigor_ratio
+    } else {
+        0.0
+    };
+    let children_flux: f32 = node.children.iter().map(count_meristem_flux).sum();
+    self_flux + children_flux
 }
 
 /// Main growth simulation function
@@ -581,19 +748,44 @@ pub fn simulate_growth(mut trunk: GrowthNode, config: &GrowthConfig) -> GrowthNo
     // Create lateral buds on trunk
     create_lateral_buds(&mut trunk, config, &mut rng);
 
+    // Dynamic cut threshold tracking
+    let mut current_cut_threshold = config.cut_threshold;
+
+    // Use a mutable config copy for dynamic threshold adjustment
+    let mut active_config = config.clone();
+
     // Run growth iterations
     for iteration in 0..config.iterations {
-        // Calculate target energy based on iteration (increases over time)
-        let base_energy = 1.0 + (iteration as f32).powf(1.5) * 0.2;
+        // Energy scaling: original uses 1 + iter^1.5 (not * 0.2)
+        let base_energy = 1.0 + (iteration as f32).powf(1.5);
 
-        // Calculate vigor ratios
-        calculate_vigor_ratios(&mut trunk, config.apical_dominance);
+        // Calculate vigor ratios (competitive or simple)
+        calculate_vigor_ratios(
+            &mut trunk,
+            config.apical_dominance,
+            config.competitive_vigor,
+        );
 
         // Distribute vigor from root
         distribute_vigor(&mut trunk, base_energy);
 
+        // Dynamic cut threshold adaptation
+        if config.dynamic_cut_threshold {
+            let actual_flux = count_meristem_flux(&trunk);
+            let target_flux = 1.0 + (iteration as f32).powf(1.5);
+
+            if actual_flux > target_flux * 1.2 {
+                // Too many branches - raise cut threshold to prune more
+                current_cut_threshold += 0.1;
+            } else if actual_flux < target_flux * 0.8 {
+                // Too few branches - lower cut threshold to preserve more
+                current_cut_threshold = (current_cut_threshold - 0.1).max(0.01);
+            }
+            active_config.cut_threshold = current_cut_threshold;
+        }
+
         // Apply growth rules
-        apply_growth_rules(&mut trunk, config, &mut rng);
+        apply_growth_rules(&mut trunk, &active_config, &mut rng);
 
         // Apply gravity
         apply_gravity_to_growth(&mut trunk, config);
@@ -688,7 +880,7 @@ mod tests {
         let config = GrowthConfig::default();
         let mut trunk = create_trunk_structure(&config);
 
-        calculate_vigor_ratios(&mut trunk, config.apical_dominance);
+        calculate_vigor_ratios(&mut trunk, config.apical_dominance, false);
         distribute_vigor(&mut trunk, 1.0);
 
         // Trunk should have vigor

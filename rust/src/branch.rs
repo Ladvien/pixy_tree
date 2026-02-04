@@ -10,6 +10,9 @@ pub struct MeshData {
     pub normals: Vec<Vector3>,
     pub uvs: Vec<Vector2>,
     pub indices: Vec<i32>,
+    /// Per-vertex smooth weight (0.0 = no smoothing, 1.0 = full smoothing)
+    /// Empty means uniform weight. When populated, must match vertices.len().
+    pub smooth_weights: Vec<f32>,
 }
 
 impl MeshData {
@@ -24,6 +27,22 @@ impl MeshData {
         self.vertices.extend_from_slice(&other.vertices);
         self.normals.extend_from_slice(&other.normals);
         self.uvs.extend_from_slice(&other.uvs);
+
+        // Extend smooth weights if either mesh has them
+        if !other.smooth_weights.is_empty() || !self.smooth_weights.is_empty() {
+            // Pad self's weights if needed
+            if self.smooth_weights.is_empty() && !self.vertices.is_empty() {
+                let existing_count = self.vertices.len() - other.vertices.len();
+                self.smooth_weights.resize(existing_count, 1.0);
+            }
+            // Extend with other's weights (or default 1.0)
+            if other.smooth_weights.is_empty() {
+                self.smooth_weights
+                    .resize(self.smooth_weights.len() + other.vertices.len(), 1.0);
+            } else {
+                self.smooth_weights.extend_from_slice(&other.smooth_weights);
+            }
+        }
 
         // Offset indices to account for existing vertices
         for idx in &other.indices {
@@ -102,6 +121,15 @@ pub struct BranchConfig {
     // Floor avoidance
     pub floor_avoidance: bool,
     pub floor_level: f32,
+    // Property curves (height-dependent parameters)
+    /// Branch length curve end ratio (1.0 = uniform, <1 shorter at top)
+    pub branch_length_curve_end: f32,
+    /// Branch length curve power (1.0 = linear)
+    pub branch_length_curve_power: f32,
+    /// Branch radius curve end ratio (1.0 = uniform)
+    pub branch_radius_curve_end: f32,
+    /// Branch radius curve power
+    pub branch_radius_curve_power: f32,
 }
 
 /// Xorshift64 RNG for deterministic generation
@@ -353,14 +381,28 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let up_offset = Vector3::UP * config.up_attraction;
         let direction = (flattened_dir + random_offset + up_offset).normalized();
 
-        // Calculate radii
-        let base_radius = trunk_r * config.branch_radius_ratio;
+        // Calculate radii with property curve
+        let radius_curve_mult = if (config.branch_radius_curve_end - 1.0).abs() > 0.001 {
+            let factor = height_ratio.powf(config.branch_radius_curve_power);
+            1.0 + (config.branch_radius_curve_end - 1.0) * factor
+        } else {
+            1.0
+        };
+        let base_radius = trunk_r * config.branch_radius_ratio * radius_curve_mult;
         let tip_radius = base_radius * (1.0 - config.branch_taper);
 
         // Apply crown shape envelope
         let height_ratio = (height - start_height) / zone_length;
         let shape_mult = config.crown_shape.get_length_multiplier(height_ratio);
         let final_mult = lerp(1.0, shape_mult, config.crown_influence);
+
+        // Apply property curve for branch length (height-dependent)
+        let length_curve_mult = if (config.branch_length_curve_end - 1.0).abs() > 0.001 {
+            let factor = height_ratio.powf(config.branch_length_curve_power);
+            1.0 + (config.branch_length_curve_end - 1.0) * factor
+        } else {
+            1.0
+        };
 
         // Apply length variation: higher variation = wider range
         let variation_min = 1.0 - config.branch_length_variation;
@@ -373,6 +415,7 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             * config.branch_length
             * final_mult
             * dominance_mult
+            * length_curve_mult
             * rng.range(variation_min, 1.0);
 
         // Apply angle curve based on height (adjust direction)
@@ -556,24 +599,100 @@ pub fn generate_sub_branches(
     branches
 }
 
-/// Apply gravity bending to a direction vector
-/// stiffness (0 = flexible, 1 = stiff) reduces the gravity effect
-fn apply_gravity(direction: Vector3, t: f32, gravity_strength: f32, stiffness: f32) -> Vector3 {
+/// Apply torque-based gravity bending to a direction vector using cumulative rotation.
+///
+/// Models realistic branch drooping where:
+/// - Horizontal branches bend more than vertical ones (horizontality factor)
+/// - Weight accumulates toward the tip (cumulated weight increases with t)
+/// - Stiffness provides exponential resistance to deviation from rest pose
+/// - Bending compounds along the branch via rotation composition
+///
+/// # Arguments
+/// * `direction` - Current growth direction at this point
+/// * `t` - Position along branch (0.0 = base, 1.0 = tip)
+/// * `gravity_strength` - Overall gravity influence
+/// * `stiffness` - Resistance to bending (0 = flexible, 1 = stiff)
+/// * `cumulated_weight` - Total weight of branch from this point to tip (0.0-1.0)
+/// * `deviation` - Accumulated deviation from rest pose (radians)
+fn apply_gravity_torque(
+    direction: Vector3,
+    _t: f32,
+    gravity_strength: f32,
+    stiffness: f32,
+    cumulated_weight: f32,
+    deviation: f32,
+) -> (Vector3, f32) {
     if gravity_strength <= 0.0 {
-        return direction;
+        return (direction, deviation);
     }
-    // Apply stiffness to reduce gravity effect
-    let effective_gravity = gravity_strength * (1.0 - stiffness);
-    if effective_gravity <= 0.0 {
-        return direction;
+
+    // Horizontality: vertical branches are immune, horizontal branches bend maximally
+    let horizontality = 1.0 - direction.y.abs();
+
+    // Cumulated weight increases toward tip (simulating branch mass beyond this point)
+    let weight = cumulated_weight.max(0.01);
+
+    // Torque = horizontality * sqrt(weight) * gravity
+    // sqrt models sub-linear weight-to-force relationship
+    let torque = horizontality * weight.sqrt() * gravity_strength;
+
+    // Exponential stiffness resistance: strong resistance to large deviations
+    // Maps stiffness [0,1] to resistance factor, with exponential decay for large bends
+    let stiffness_resistance = if stiffness > 0.0 {
+        let effective_stiffness = stiffness * 2.0; // Scale for usable range
+        (-deviation.abs() / (effective_stiffness + 0.001)).exp()
+    } else {
+        1.0 // No stiffness = full bending
+    };
+
+    // Final displacement angle (radians)
+    let displacement = torque * stiffness_resistance * 0.1; // 0.1 scales to reasonable angles
+
+    if displacement < 0.0001 {
+        return (direction, deviation);
     }
-    // Quadratic bend - more effect toward the tip
-    let bend = t * t * effective_gravity;
-    let bent = Vector3::new(direction.x, direction.y - bend, direction.z);
-    bent.normalized()
+
+    // Find rotation axis: perpendicular to direction in the gravity plane
+    // tangent = direction × down, giving us horizontal rotation axis
+    let down = Vector3::new(0.0, -1.0, 0.0);
+    let tangent = direction.cross(down);
+    let tangent_len = tangent.length();
+
+    if tangent_len < 0.001 {
+        // Direction is nearly vertical - gravity has minimal effect
+        return (direction, deviation);
+    }
+    let tangent = tangent / tangent_len;
+
+    // Apply rotation around tangent axis
+    let new_direction = rotate_around_axis(direction, tangent, displacement);
+    let new_deviation = deviation + displacement;
+
+    (new_direction.normalized(), new_deviation)
 }
 
-/// Generate mesh data for a single branch segment with twist and gravity support
+/// Rotate a vector around an axis by the given angle (radians) using Rodrigues' formula
+fn rotate_around_axis(v: Vector3, axis: Vector3, angle: f32) -> Vector3 {
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+    let dot = v.x * axis.x + v.y * axis.y + v.z * axis.z;
+    let cross = Vector3::new(
+        axis.y * v.z - axis.z * v.y,
+        axis.z * v.x - axis.x * v.z,
+        axis.x * v.y - axis.y * v.x,
+    );
+
+    Vector3::new(
+        v.x * cos_a + cross.x * sin_a + axis.x * dot * (1.0 - cos_a),
+        v.y * cos_a + cross.y * sin_a + axis.y * dot * (1.0 - cos_a),
+        v.z * cos_a + cross.z * sin_a + axis.z * dot * (1.0 - cos_a),
+    )
+}
+
+/// Generate mesh data for a single branch segment with twist and gravity support.
+///
+/// Ring count is determined by `resolution` (segments per unit length).
+/// A value of 0.0 uses the legacy fixed ring count (2 or 6).
 pub fn generate_branch_mesh_with_config(
     branch: &BranchSegment,
     radial_segments: i32,
@@ -581,11 +700,37 @@ pub fn generate_branch_mesh_with_config(
     gravity_strength: f32,
     stiffness: f32,
 ) -> MeshData {
+    generate_branch_mesh_with_resolution(
+        branch,
+        radial_segments,
+        branch_twist,
+        gravity_strength,
+        stiffness,
+        0.0, // legacy: auto ring count
+    )
+}
+
+/// Generate mesh data for a single branch with configurable length resolution.
+///
+/// # Arguments
+/// * `resolution` - Rings per unit length (0.0 = use legacy auto-detect)
+pub fn generate_branch_mesh_with_resolution(
+    branch: &BranchSegment,
+    radial_segments: i32,
+    branch_twist: f32,
+    gravity_strength: f32,
+    stiffness: f32,
+    resolution: f32,
+) -> MeshData {
     let mut mesh = MeshData::new();
 
     let segments = radial_segments.max(3) as usize;
-    // Use more rings when twist or gravity is applied for smoother curves
-    let rings = if branch_twist.abs() > 0.1 || gravity_strength > 0.01 {
+
+    // Ring count: if resolution > 0, scale with branch length
+    let rings = if resolution > 0.0 {
+        let computed = (resolution * branch.length).round() as usize;
+        computed.clamp(2, 16) // At least 2 (base+tip), max 16
+    } else if branch_twist.abs() > 0.1 || gravity_strength > 0.01 {
         6usize // More rings for curved branches
     } else {
         2usize // Simple branches need only base and tip
@@ -595,17 +740,31 @@ pub fn generate_branch_mesh_with_config(
     let mut positions: Vec<Vector3> = Vec::with_capacity(rings);
     let mut directions: Vec<Vector3> = Vec::with_capacity(rings);
 
-    // Pre-compute positions along the branch with gravity
+    // Pre-compute positions along the branch with torque-based gravity
     let step_length = branch.length / (rings - 1) as f32;
     let mut current_pos = branch.start;
-    let mut current_dir;
+    let mut current_dir = branch.direction;
+    let mut deviation = 0.0f32;
 
     for ring in 0..rings {
         let t = ring as f32 / (rings - 1) as f32;
         positions.push(current_pos);
 
-        // Apply gravity bending to direction (stiffness reduces effect)
-        current_dir = apply_gravity(branch.direction, t, gravity_strength, stiffness);
+        // Cumulated weight: mass from this point to the tip (decreases toward tip)
+        // Thicker branches are heavier
+        let weight_at_t = (1.0 - t) * branch.base_radius.max(0.01);
+
+        // Apply torque-based gravity bending with cumulative rotation
+        let (new_dir, new_deviation) = apply_gravity_torque(
+            current_dir,
+            t,
+            gravity_strength,
+            stiffness,
+            weight_at_t,
+            deviation,
+        );
+        current_dir = new_dir;
+        deviation = new_deviation;
         directions.push(current_dir);
 
         if ring < rings - 1 {
@@ -865,6 +1024,10 @@ pub fn generate_branch_collar(
     let start_radius = branch_radius * 1.3;
     let end_radius = branch_radius;
 
+    // Smooth weight: thick short collars get more smoothing (junction areas)
+    // smooth_amount = min(1.0, radius / collar_length) from original ManifoldMesher
+    let smooth_amount = (branch_radius / collar_length.max(0.001)).min(1.0);
+
     // Generate rings of vertices
     for ring in 0..rings {
         let t = ring as f32 / (rings - 1) as f32;
@@ -880,6 +1043,9 @@ pub fn generate_branch_collar(
         // Use smooth interpolation for natural look
         let smooth_t = t * t * (3.0 - 2.0 * t); // Smoothstep
         let radius = lerp(start_radius, end_radius, smooth_t);
+
+        // Weight is strongest at the base (trunk junction) and decreases toward tip
+        let ring_weight = smooth_amount * (1.0 - t * 0.5);
 
         let v = t;
 
@@ -899,6 +1065,7 @@ pub fn generate_branch_collar(
             mesh.vertices.push(vertex);
             mesh.normals.push(normal);
             mesh.uvs.push(Vector2::new(seg as f32 / segments as f32, v));
+            mesh.smooth_weights.push(ring_weight);
         }
     }
 
