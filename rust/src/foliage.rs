@@ -13,6 +13,7 @@ pub enum LeafStyle {
     ClusterSphere = 2, // Octahedron approximation
     StarBurst = 3,     // 3 quads at 60°
     NeedleCluster = 4, // 6 thin radiating quads (pine)
+    Icosphere = 5,     // Subdivided icosahedron (low-poly rounded blob)
 }
 
 /// Foliage placement mode
@@ -288,6 +289,7 @@ pub fn generate_foliage_mesh(points: &[LeafPoint], style: LeafStyle) -> MeshData
             LeafStyle::ClusterSphere => generate_cluster_sphere(point),
             LeafStyle::StarBurst => generate_star_burst(point),
             LeafStyle::NeedleCluster => generate_needle_cluster(point),
+            LeafStyle::Icosphere => generate_icosphere(point),
         };
         mesh.extend(&leaf_mesh);
     }
@@ -368,6 +370,94 @@ fn generate_cluster_sphere(point: &LeafPoint) -> MeshData {
     add_triangle(&mut mesh, bottom, front, left);
 
     mesh
+}
+
+/// Generate subdivided icosahedron (low-poly rounded blob)
+fn generate_icosphere(point: &LeafPoint) -> MeshData {
+    let mut mesh = MeshData::new();
+    let radius = point.size;
+
+    // Golden ratio for icosahedron vertex placement
+    let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
+    let inv_len = 1.0 / (1.0 + phi * phi).sqrt(); // normalize to unit sphere
+
+    // 12 icosahedron vertices (normalized to unit sphere, will scale by radius later)
+    let verts: [Vector3; 12] = [
+        Vector3::new(-1.0, phi, 0.0) * inv_len,
+        Vector3::new(1.0, phi, 0.0) * inv_len,
+        Vector3::new(-1.0, -phi, 0.0) * inv_len,
+        Vector3::new(1.0, -phi, 0.0) * inv_len,
+        Vector3::new(0.0, -1.0, phi) * inv_len,
+        Vector3::new(0.0, 1.0, phi) * inv_len,
+        Vector3::new(0.0, -1.0, -phi) * inv_len,
+        Vector3::new(0.0, 1.0, -phi) * inv_len,
+        Vector3::new(phi, 0.0, -1.0) * inv_len,
+        Vector3::new(phi, 0.0, 1.0) * inv_len,
+        Vector3::new(-phi, 0.0, -1.0) * inv_len,
+        Vector3::new(-phi, 0.0, 1.0) * inv_len,
+    ];
+
+    // 20 triangular faces of the icosahedron (vertex indices)
+    let faces: [[usize; 3]; 20] = [
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
+    ];
+
+    // Subdivide once: split each triangle into 4 by adding midpoints on edges
+    // This produces 80 faces from the original 20
+    for face in &faces {
+        let v0 = verts[face[0]];
+        let v1 = verts[face[1]];
+        let v2 = verts[face[2]];
+
+        // Midpoints projected onto unit sphere
+        let m01 = midpoint_on_sphere(v0, v1);
+        let m12 = midpoint_on_sphere(v1, v2);
+        let m20 = midpoint_on_sphere(v2, v0);
+
+        // 4 sub-triangles, scaled by radius and offset by position
+        let tris = [
+            (v0, m01, m20),
+            (m01, v1, m12),
+            (m20, m12, v2),
+            (m01, m12, m20),
+        ];
+
+        for (a, b, c) in &tris {
+            add_triangle(
+                &mut mesh,
+                point.position + *a * radius,
+                point.position + *b * radius,
+                point.position + *c * radius,
+            );
+        }
+    }
+
+    mesh
+}
+
+/// Compute midpoint of two vectors and project back onto the unit sphere
+fn midpoint_on_sphere(a: Vector3, b: Vector3) -> Vector3 {
+    let mid = Vector3::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5);
+    mid.normalized()
 }
 
 /// Generate 3 quads at 60 degree angles (star burst)

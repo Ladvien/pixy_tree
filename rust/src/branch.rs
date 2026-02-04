@@ -130,6 +130,10 @@ pub struct BranchConfig {
     pub branch_radius_curve_end: f32,
     /// Branch radius curve power
     pub branch_radius_curve_power: f32,
+    /// Crown base size: fraction of height where crown starts (0.0 = from ground)
+    pub crown_base_size: f32,
+    /// Crown height override (-1.0 = auto, use trunk_height)
+    pub crown_height: f32,
 }
 
 /// Xorshift64 RNG for deterministic generation
@@ -286,8 +290,14 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
     let mut branches = Vec::new();
     let mut current_angle = 0.0f32;
 
-    // Calculate branch zone
-    let start_height = config.trunk_height * config.branch_start;
+    // Calculate branch zone with crown_base_size and crown_height overrides
+    let effective_height = if config.crown_height < 0.0 {
+        config.trunk_height
+    } else {
+        config.crown_height
+    };
+    let crown_start = effective_height * config.crown_base_size;
+    let start_height = (config.trunk_height * config.branch_start).max(crown_start);
     let end_height = config.trunk_height * config.branch_end;
     let zone_length = end_height - start_height;
 
@@ -353,16 +363,71 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         );
 
         // Direction: lerp from up to outward based on branch_angle
-        // Apply crown angle variation: varies base angle with height
-        // Positive: lower branches more vertical, upper more horizontal
-        // Negative: lower branches more horizontal, upper more vertical
-        let height_ratio = (height - start_height) / zone_length;
-        let angle_adjustment = config.crown_angle_variation * (height_ratio - 0.5) * 30.0;
-        let effective_angle = (config.branch_angle + angle_adjustment).clamp(0.0, 90.0);
+        // position_ratio: 0→1 from bottom→top of crown (for property curves, apical dominance)
+        // crown_ratio: 1→0 from bottom→top (for crown shape and crown angle variation)
+        let position_ratio = ((height - start_height) / zone_length).clamp(0.0, 1.0);
+        let crown_ratio = 1.0 - position_ratio;
 
-        let outward = Vector3::new(angle_rad.cos(), 0.0, angle_rad.sin());
-        let up = Vector3::UP;
-        let base_dir = lerp_vec3(up, outward, effective_angle / 90.0);
+        // Crown angle variation: C++ formula using Conical shape_ratio
+        // shape_ratio = Conical.get_length_multiplier(crown_ratio)
+        // angle_offset = crown_angle_variation * (1.0 - 2.0 * shape_ratio)
+        let shape_ratio = CrownShape::Conical.get_length_multiplier(crown_ratio);
+        let angle_offset = config.crown_angle_variation * (1.0 - 2.0 * shape_ratio);
+        let effective_angle = (config.branch_angle + angle_offset).clamp(0.0, 180.0);
+
+        // Branch direction relative to trunk direction (not global UP)
+        // Compute trunk direction at this height (accounting for wobble)
+        let trunk_direction = {
+            // Approximate local trunk direction from wobble derivative
+            let dt = 0.01f32;
+            let t2 = (t + dt).min(1.0);
+            let seed_f = config.seed as f32;
+            let wx1 = if config.trunk_randomness > 0.0 {
+                (t * std::f32::consts::PI + seed_f * 0.1).sin()
+                    * config.trunk_randomness
+                    * t
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let wz1 = if config.trunk_randomness > 0.0 {
+                (t * std::f32::consts::E + seed_f * 0.2).cos()
+                    * config.trunk_randomness
+                    * t
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let wx2 = if config.trunk_randomness > 0.0 {
+                (t2 * std::f32::consts::PI + seed_f * 0.1).sin()
+                    * config.trunk_randomness
+                    * t2
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let wz2 = if config.trunk_randomness > 0.0 {
+                (t2 * std::f32::consts::E + seed_f * 0.2).cos()
+                    * config.trunk_randomness
+                    * t2
+                    * config.trunk_height
+                    * 0.3
+            } else {
+                0.0
+            };
+            let delta_height = dt * config.trunk_height;
+            Vector3::new(wx2 - wx1, delta_height, wz2 - wz1).normalized()
+        };
+
+        // Tangent: perpendicular to trunk_direction, rotated by phyllotaxis
+        let tangent_base = get_perpendicular(trunk_direction);
+        let tangent = rotate_around_axis(tangent_base, trunk_direction, angle_rad);
+
+        // Direction = lerp(trunk_direction, tangent, effective_angle / 90.0)
+        let base_dir = lerp_vec3(trunk_direction, tangent, effective_angle / 90.0);
 
         // Apply flatness: reduce y component toward horizontal
         let flattened_dir = if config.branch_flatness > 0.0 {
@@ -381,9 +446,9 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let up_offset = Vector3::UP * config.up_attraction;
         let direction = (flattened_dir + random_offset + up_offset).normalized();
 
-        // Calculate radii with property curve
+        // Calculate radii with property curve (uses position_ratio: 0→1)
         let radius_curve_mult = if (config.branch_radius_curve_end - 1.0).abs() > 0.001 {
-            let factor = height_ratio.powf(config.branch_radius_curve_power);
+            let factor = position_ratio.powf(config.branch_radius_curve_power);
             1.0 + (config.branch_radius_curve_end - 1.0) * factor
         } else {
             1.0
@@ -391,14 +456,13 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let base_radius = trunk_r * config.branch_radius_ratio * radius_curve_mult;
         let tip_radius = base_radius * (1.0 - config.branch_taper);
 
-        // Apply crown shape envelope
-        let height_ratio = (height - start_height) / zone_length;
-        let shape_mult = config.crown_shape.get_length_multiplier(height_ratio);
+        // Apply crown shape envelope (uses crown_ratio: 1→0, inverted for shape)
+        let shape_mult = config.crown_shape.get_length_multiplier(crown_ratio);
         let final_mult = lerp(1.0, shape_mult, config.crown_influence);
 
-        // Apply property curve for branch length (height-dependent)
+        // Apply property curve for branch length (uses position_ratio: 0→1)
         let length_curve_mult = if (config.branch_length_curve_end - 1.0).abs() > 0.001 {
-            let factor = height_ratio.powf(config.branch_length_curve_power);
+            let factor = position_ratio.powf(config.branch_length_curve_power);
             1.0 + (config.branch_length_curve_end - 1.0) * factor
         } else {
             1.0
@@ -408,8 +472,8 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let variation_min = 1.0 - config.branch_length_variation;
 
         // Apply apical dominance: higher branches are suppressed (shorter)
-        // Formula: length_mult = 1.0 - (apical_dominance * height_ratio * 0.5)
-        let dominance_mult = 1.0 - (config.apical_dominance * height_ratio * 0.5);
+        // Formula: length_mult = 1.0 - (apical_dominance * position_ratio * 0.5)
+        let dominance_mult = 1.0 - (config.apical_dominance * position_ratio * 0.5);
 
         let length = config.trunk_height
             * config.branch_length
@@ -421,7 +485,8 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         // Apply angle curve based on height (adjust direction)
         let direction = if config.branch_angle_curve.abs() > 0.001 {
             // Positive curve = upper branches reach upward, negative = droop at top
-            let angle_adjustment = config.branch_angle_curve * height_ratio * 30.0f32.to_radians();
+            let angle_adjustment =
+                config.branch_angle_curve * position_ratio * 30.0f32.to_radians();
             Vector3::new(
                 direction.x,
                 direction.y + angle_adjustment.sin(),
@@ -480,7 +545,7 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
             tip_radius,
             depth: 0,
             is_terminal,
-            height_ratio,
+            height_ratio: position_ratio,
         });
     }
 
@@ -601,59 +666,60 @@ pub fn generate_sub_branches(
 
 /// Apply torque-based gravity bending to a direction vector using cumulative rotation.
 ///
-/// Models realistic branch drooping where:
-/// - Horizontal branches bend more than vertical ones (horizontality factor)
-/// - Weight accumulates toward the tip (cumulated weight increases with t)
-/// - Stiffness provides exponential resistance to deviation from rest pose
-/// - Bending compounds along the branch via rotation composition
+/// Matches C++ BranchFunction.cpp:110-112 formula with resolution-independent scaling.
 ///
 /// # Arguments
 /// * `direction` - Current growth direction at this point
-/// * `t` - Position along branch (0.0 = base, 1.0 = tip)
-/// * `gravity_strength` - Overall gravity influence
-/// * `stiffness` - Resistance to bending (0 = flexible, 1 = stiff)
-/// * `cumulated_weight` - Total weight of branch from this point to tip (0.0-1.0)
+/// * `gravity_strength` - Overall gravity influence (0-50 range, C++ default ~10)
+/// * `stiffness` - Resistance to bending (higher = stiffer)
+/// * `cumulated_weight` - Total weight of branch from this point to tip
 /// * `deviation` - Accumulated deviation from rest pose (radians)
+/// * `ring_count` - Total number of rings along this branch
+/// * `ring_index` - Current ring index (0 = base)
 fn apply_gravity_torque(
     direction: Vector3,
-    _t: f32,
     gravity_strength: f32,
     stiffness: f32,
     cumulated_weight: f32,
     deviation: f32,
+    ring_count: usize,
+    ring_index: usize,
 ) -> (Vector3, f32) {
     if gravity_strength <= 0.0 {
         return (direction, deviation);
     }
 
+    // Resolution scaling: ensures result is independent of ring count
+    let resolution = ring_count.max(2) as f32;
+
+    // Age along the branch (0 at base, approaches 1 at tip)
+    let age = ring_index as f32 / resolution;
+
     // Horizontality: vertical branches are immune, horizontal branches bend maximally
     let horizontality = 1.0 - direction.y.abs();
 
-    // Cumulated weight increases toward tip (simulating branch mass beyond this point)
+    // Cumulated weight (sub-linear via sqrt)
     let weight = cumulated_weight.max(0.01);
 
-    // Torque = horizontality * sqrt(weight) * gravity
-    // sqrt models sub-linear weight-to-force relationship
-    let torque = horizontality * weight.sqrt() * gravity_strength;
+    // Base displacement: matches C++ resolution-independent formula
+    // Dividing by resolution^2 ensures consistent bending regardless of subdivision
+    // (1 + age) provides increasing resistance toward tip (wood stiffens with maturity)
+    let base_displacement = horizontality * weight.sqrt() * gravity_strength
+        / (resolution * resolution * 1000.0 * (1.0 + age));
 
-    // Exponential stiffness resistance: strong resistance to large deviations
-    // Maps stiffness [0,1] to resistance factor, with exponential decay for large bends
-    let stiffness_resistance = if stiffness > 0.0 {
-        let effective_stiffness = stiffness * 2.0; // Scale for usable range
-        (-deviation.abs() / (effective_stiffness + 0.001)).exp()
-    } else {
-        1.0 // No stiffness = full bending
-    };
+    // Stiffness resistance: exponential decay based on accumulated deviation
+    // C++: exp(-|deviation * stiffness / resolution|)
+    // Higher stiffness = more resistance to bending
+    let stiffness_resistance = (-(deviation.abs() * stiffness / resolution)).exp();
 
     // Final displacement angle (radians)
-    let displacement = torque * stiffness_resistance * 0.1; // 0.1 scales to reasonable angles
+    let displacement = base_displacement * stiffness_resistance;
 
     if displacement < 0.0001 {
         return (direction, deviation);
     }
 
     // Find rotation axis: perpendicular to direction in the gravity plane
-    // tangent = direction × down, giving us horizontal rotation axis
     let down = Vector3::new(0.0, -1.0, 0.0);
     let tangent = direction.cross(down);
     let tangent_len = tangent.length();
@@ -757,11 +823,12 @@ pub fn generate_branch_mesh_with_resolution(
         // Apply torque-based gravity bending with cumulative rotation
         let (new_dir, new_deviation) = apply_gravity_torque(
             current_dir,
-            t,
             gravity_strength,
             stiffness,
             weight_at_t,
             deviation,
+            rings,
+            ring,
         );
         current_dir = new_dir;
         deviation = new_deviation;
@@ -909,7 +976,12 @@ pub fn calculate_pipe_radius(child_radii: &[f32], exponent: f32, min_radius: f32
 /// # Note
 /// This function identifies parent-child relationships by position matching.
 /// A branch B is a child of A if B.start is close to A's endpoint (start + direction * length).
-pub fn apply_pipe_radius_model(branches: &mut [BranchSegment], exponent: f32, min_radius: f32) {
+pub fn apply_pipe_radius_model(
+    branches: &mut [BranchSegment],
+    exponent: f32,
+    min_radius: f32,
+    constant_growth: f32,
+) {
     if branches.is_empty() {
         return;
     }
@@ -961,7 +1033,13 @@ pub fn apply_pipe_radius_model(branches: &mut [BranchSegment], exponent: f32, mi
                     .collect();
 
                 // Calculate new radius using pipe model
-                let new_radius = calculate_pipe_radius(&child_radii, exponent, min_radius);
+                let mut new_radius = calculate_pipe_radius(&child_radii, exponent, min_radius);
+
+                // Apply constant growth: adds radius proportional to branch length
+                // Matches C++ pipe_radius constant_growth parameter
+                if constant_growth > 0.0 {
+                    new_radius += constant_growth * branches[idx].length / 100.0;
+                }
 
                 // Update this branch's tip radius to match children
                 // and propagate upward

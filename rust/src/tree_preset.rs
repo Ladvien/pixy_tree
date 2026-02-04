@@ -312,6 +312,8 @@ pub struct TreePresetValues {
     // Crown
     pub crown_shape: CrownShape,
     pub crown_influence: f32,
+    pub crown_base_size: f32,
+    pub crown_height: f32,
 
     // Materials
     pub trunk_color: Color,
@@ -402,6 +404,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.9,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.365, 0.227, 0.102), // #5D3A1A Dark Brown
             foliage_color: Color::from_rgb(0.176, 0.314, 0.086), // #2D5016 Dark Green
             foliage: Some(FoliagePresetValues::oak()),
@@ -462,6 +466,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.420, 0.267, 0.137), // #6B4423 Reddish Brown
             foliage_color: Color::from_rgb(0.106, 0.302, 0.243), // #1B4D3E Pine Green
             foliage: Some(FoliagePresetValues::pine()),
@@ -522,6 +528,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.8,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.478, 0.361, 0.239), // #7A5C3D Grayish Brown
             foliage_color: Color::from_rgb(0.565, 0.690, 0.376), // #90B060 Yellow-Green
             foliage: Some(FoliagePresetValues::willow()),
@@ -582,6 +590,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::TaperedCylindrical,
             crown_influence: 0.7,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.961, 0.961, 0.863), // #F5F5DC Beige/White
             foliage_color: Color::from_rgb(0.486, 0.804, 0.486), // #7CCD7C Light Green
             foliage: Some(FoliagePresetValues::birch()),
@@ -642,6 +652,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Cylindrical,
             crown_influence: 0.5,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.545, 0.451, 0.333), // #8B7355 Tan Brown
             foliage_color: Color::from_rgb(0.133, 0.545, 0.133), // #228B22 Forest Green
             foliage: Some(FoliagePresetValues::palm()),
@@ -702,6 +714,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Flame,
             crown_influence: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.290, 0.235, 0.165), // #4A3C2A Dark Olive
             foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
             foliage: Some(FoliagePresetValues::cypress()),
@@ -762,6 +776,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.6,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.361, 0.251, 0.200), // #5C4033 Dark Brown
             foliage_color: Color::from_rgb(0.208, 0.369, 0.231), // #355E3B Hunter Green
             foliage: Some(FoliagePresetValues::bonsai()),
@@ -822,6 +838,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.85,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.32, 0.21, 0.12), // Dark brown
             foliage_color: Color::from_rgb(0.133, 0.322, 0.133), // Forest green
             foliage: Some(FoliagePresetValues::maple()),
@@ -882,6 +900,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.380, 0.243, 0.141), // Reddish-brown bark
             foliage_color: Color::from_rgb(0.086, 0.278, 0.212), // Blue-green
             foliage: Some(FoliagePresetValues::spruce()),
@@ -942,6 +962,8 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Flame,
             crown_influence: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.553, 0.514, 0.435), // Gray-brown bark
             foliage_color: Color::from_rgb(0.404, 0.545, 0.306), // Yellow-green
             foliage: Some(FoliagePresetValues::poplar()),
@@ -1002,6 +1024,8 @@ impl TreePresetValues {
             branch_collar_length: 1.8,
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.7,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.506, 0.424, 0.369), // Gray-tan bark
             foliage_color: Color::from_rgb(0.306, 0.463, 0.235), // Olive green
             foliage: Some(FoliagePresetValues::baobab()),
@@ -1062,6 +1086,8 @@ impl TreePresetValues {
             branch_collar_length: 1.6,
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.6,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.463, 0.396, 0.322), // Gray-brown
             foliage_color: Color::from_rgb(0.286, 0.443, 0.255), // Blue-green
             foliage: Some(FoliagePresetValues::dragon_tree()),
@@ -1122,6 +1148,8 @@ impl TreePresetValues {
             branch_collar_length: 1.4,
             crown_shape: CrownShape::Spreading,
             crown_influence: 0.8,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.376, 0.282, 0.212), // Red-brown bark
             foliage_color: Color::from_rgb(0.698, 0.133, 0.133), // Red foliage
             foliage: Some(FoliagePresetValues::japanese_maple()),
@@ -1182,6 +1210,8 @@ impl TreePresetValues {
             branch_collar_length: 1.6,
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.4,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.388, 0.361, 0.325), // Gray-brown (weathered)
             foliage_color: Color::from_rgb(0.3, 0.3, 0.3),     // Unused but set to gray
             foliage: None,                                     // No foliage
@@ -1242,8 +1272,10 @@ impl TreePresetValues {
             branch_collar_length: 1.5,
             crown_shape: CrownShape::Conical,
             crown_influence: 0.9,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
             trunk_color: Color::from_rgb(0.463, 0.263, 0.161), // Red-brown bark
-            foliage_color: Color::from_rgb(0.12, 0.32, 0.21), // Dark green
+            foliage_color: Color::from_rgb(0.12, 0.32, 0.21),  // Dark green
             foliage: Some(FoliagePresetValues::redwood()),
             growth: Some(GrowthPresetValues::structured()),
         }

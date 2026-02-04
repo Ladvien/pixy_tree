@@ -35,30 +35,27 @@ impl CrownShape {
             // Like spherical but only the top half of the sine curve
             CrownShape::Hemispherical => 0.2 + 0.8 * (PI * 0.5 * t).sin(),
 
-            // Gradual taper from bottom to top
-            CrownShape::TaperedCylindrical => 1.0 - 0.5 * t,
+            // Gradual taper wider toward top (matches C++ TAPER_BASE + TAPER_RANGE * ratio)
+            CrownShape::TaperedCylindrical => 0.5 + 0.5 * t,
 
-            // Cypress - peaked at 70% height, then falloff
+            // Cypress - peaked at 70% height, reaches 0 at both ends (C++ formula)
             CrownShape::Flame => {
-                let peak = 0.7;
-                if t < peak {
-                    0.3 + 0.7 * (t / peak)
+                if t <= 0.7 {
+                    t / 0.7
                 } else {
-                    1.0 - 0.8 * ((t - peak) / (1.0 - peak))
+                    (1.0 - t) / 0.3
                 }
             }
 
             // Inverse of conical - longer at bottom, shorter at top
             CrownShape::InverseConical => 1.0 - 0.8 * t,
 
-            // Similar to flame but more gradual falloff
+            // Similar to flame but base at 0.5, peak at 0.7 (C++ formula)
             CrownShape::TendFlame => {
-                let peak = 0.6;
-                if t < peak {
-                    0.4 + 0.6 * (t / peak)
+                if t <= 0.7 {
+                    0.5 + 0.5 * t / 0.7
                 } else {
-                    let falloff = (t - peak) / (1.0 - peak);
-                    1.0 - 0.6 * falloff * falloff
+                    0.5 + 0.5 * (1.0 - t) / 0.3
                 }
             }
 
@@ -135,6 +132,14 @@ mod tests {
         assert!(bottom > top);
         assert!((bottom - 1.0).abs() < 0.001);
         assert!((top - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_tapered_cylindrical_increases_with_height() {
+        let shape = CrownShape::TaperedCylindrical;
+        assert!((shape.get_length_multiplier(0.0) - 0.5).abs() < 0.001);
+        assert!((shape.get_length_multiplier(0.5) - 0.75).abs() < 0.001);
+        assert!((shape.get_length_multiplier(1.0) - 1.0).abs() < 0.001);
     }
 
     #[test]

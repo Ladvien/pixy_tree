@@ -16,6 +16,7 @@ use crate::foliage::{
 use crate::growth::{
     convert_growth_to_branches, create_trunk_structure, simulate_growth, GrowthConfig,
 };
+use crate::manifold_mesher::{segments_to_tree, ManifoldMesherConfig};
 use crate::smoothing::{laplacian_smooth, laplacian_smooth_weighted, recalculate_normals};
 use crate::tree_preset::{GrowthPreset, GrowthPresetValues, TreePreset, TreePresetValues};
 
@@ -257,13 +258,13 @@ pub struct PixyTree {
     // ═══════════════════════════════════════════
     // Gravity Settings
     // ═══════════════════════════════════════════
-    /// Cumulative downward bend along branches
-    #[export(range = (0.0, 1.0, 0.05))]
+    /// Cumulative downward bend along branches (C++ scale: 0-50, default ~10)
+    #[export(range = (0.0, 50.0, 0.5))]
     #[init(val = 0.0)]
     gravity_strength: f32,
 
-    /// Resistance to gravity bending (0 = flexible, 1 = stiff)
-    #[export(range = (0.0, 1.0, 0.05))]
+    /// Resistance to gravity bending (higher = stiffer wood)
+    #[export(range = (0.0, 10.0, 0.1))]
     #[init(val = 0.5)]
     stiffness: f32,
 
@@ -381,6 +382,11 @@ pub struct PixyTree {
     #[init(val = 0.02)]
     pipe_radius_min: f32,
 
+    /// Constant growth: additive radius proportional to branch length
+    #[export(range = (0.0, 1.0, 0.01))]
+    #[init(val = 0.0)]
+    pipe_radius_constant_growth: f32,
+
     // ═══════════════════════════════════════════
     // Branch Collar Settings
     // ═══════════════════════════════════════════
@@ -395,6 +401,32 @@ pub struct PixyTree {
     branch_collar_length: f32,
 
     // ═══════════════════════════════════════════
+    // Manifold Mesher
+    // ═══════════════════════════════════════════
+    /// Enable manifold meshing (watertight branch junctions)
+    #[export]
+    #[init(val = false)]
+    manifold_mesh_enabled: bool,
+
+    /// Enable Pivot Painter 2.0 per-vertex attributes (CUSTOM0/CUSTOM1)
+    #[export]
+    #[init(val = false)]
+    pivot_painter_enabled: bool,
+
+    // ═══════════════════════════════════════════
+    // Multiple Stems
+    // ═══════════════════════════════════════════
+    /// Number of stems (independent trunks)
+    #[export(range = (1.0, 5.0, 1.0))]
+    #[init(val = 1)]
+    stem_count: i32,
+
+    /// Radial spread between stems
+    #[export(range = (0.0, 2.0, 0.1))]
+    #[init(val = 0.5)]
+    stem_spread: f32,
+
+    // ═══════════════════════════════════════════
     // Crown Shape
     // ═══════════════════════════════════════════
     /// Crown shape envelope that modulates branch length based on height
@@ -406,6 +438,16 @@ pub struct PixyTree {
     #[export(range = (0.0, 1.0, 0.05))]
     #[init(val = 1.0)]
     crown_influence: f32,
+
+    /// Crown base size: fraction of height where crown starts (0 = from branch_start)
+    #[export(range = (0.0, 0.9, 0.05))]
+    #[init(val = 0.0)]
+    crown_base_size: f32,
+
+    /// Crown height override (-1 = auto, uses trunk_height)
+    #[export(range = (-1.0, 50.0, 0.5))]
+    #[init(val = -1.0)]
+    crown_height: f32,
 
     // ═══════════════════════════════════════════
     // Foliage Settings
@@ -679,8 +721,28 @@ pub struct PixyTree {
 
     /// Use competitive vigor distribution (original formula)
     #[export]
-    #[init(val = false)]
+    #[init(val = true)]
     competitive_vigor: bool,
+
+    /// Trunk segments per unit height for growth mode (multi-segment trunk)
+    #[export(range = (1.0, 10.0, 0.5))]
+    #[init(val = 3.0)]
+    growth_trunk_resolution: f32,
+
+    /// Trunk vertical bias per segment in growth mode
+    #[export(range = (0.0, 1.0, 0.05))]
+    #[init(val = 0.6)]
+    growth_trunk_up_attraction: f32,
+
+    /// Split angle for growth bifurcation (degrees)
+    #[export(range = (10.0, 90.0, 1.0))]
+    #[init(val = 60.0)]
+    growth_split_angle: f32,
+
+    /// Phyllotaxis angle for growth splits (degrees)
+    #[export(range = (0.0, 360.0, 0.5))]
+    #[init(val = 137.5)]
+    growth_phyllotaxis_angle: f32,
 
     // Internal state (not exported)
     #[init(val = None)]
@@ -842,14 +904,25 @@ impl PixyTree {
         self.pipe_radius_enabled = false;
         self.pipe_radius_exponent = 2.0;
         self.pipe_radius_min = 0.02;
+        self.pipe_radius_constant_growth = 0.0;
 
         // Branch Collar
         self.branch_collar_enabled = true;
         self.branch_collar_length = 1.5;
 
+        // Manifold Mesher
+        self.manifold_mesh_enabled = false;
+        self.pivot_painter_enabled = false;
+
+        // Multiple Stems
+        self.stem_count = 1;
+        self.stem_spread = 0.5;
+
         // Crown
         self.crown_shape = CrownShape::Cylindrical;
         self.crown_influence = 1.0;
+        self.crown_base_size = 0.0;
+        self.crown_height = -1.0;
 
         // Foliage
         self.foliage_enabled = true;
@@ -905,7 +978,11 @@ impl PixyTree {
         self.growth_extension_taper = 0.95;
         self.growth_split_taper = 0.9;
         self.secondary_growth = false;
-        self.competitive_vigor = false;
+        self.competitive_vigor = true;
+        self.growth_trunk_resolution = 3.0;
+        self.growth_trunk_up_attraction = 0.6;
+        self.growth_split_angle = 60.0;
+        self.growth_phyllotaxis_angle = 137.5;
     }
 
     fn apply_preset_values(&mut self, values: &TreePresetValues) {
@@ -980,6 +1057,8 @@ impl PixyTree {
         // Crown
         self.crown_shape = values.crown_shape;
         self.crown_influence = values.crown_influence;
+        self.crown_base_size = values.crown_base_size;
+        self.crown_height = values.crown_height;
 
         // Materials
         self.trunk_color = values.trunk_color;
@@ -1032,6 +1111,8 @@ impl PixyTree {
         hash = hash.wrapping_add((self.apical_dominance.to_bits() as u64).wrapping_mul(349));
         hash = hash.wrapping_add((self.crown_shape as u64).wrapping_mul(109));
         hash = hash.wrapping_add((self.crown_influence.to_bits() as u64).wrapping_mul(113));
+        hash = hash.wrapping_add((self.crown_base_size.to_bits() as u64).wrapping_mul(829));
+        hash = hash.wrapping_add((self.crown_height.to_bits() as u64).wrapping_mul(839));
         hash = hash.wrapping_add((self.seed as u64).wrapping_mul(127));
         // Foliage parameters
         hash = hash.wrapping_add((self.foliage_enabled as u64).wrapping_mul(131));
@@ -1108,6 +1189,18 @@ impl PixyTree {
         hash = hash.wrapping_add((self.growth_split_taper.to_bits() as u64).wrapping_mul(727));
         hash = hash.wrapping_add((self.secondary_growth as u64).wrapping_mul(733));
         hash = hash.wrapping_add((self.competitive_vigor as u64).wrapping_mul(739));
+        hash = hash.wrapping_add((self.growth_trunk_resolution.to_bits() as u64).wrapping_mul(811));
+        hash =
+            hash.wrapping_add((self.growth_trunk_up_attraction.to_bits() as u64).wrapping_mul(821));
+        hash = hash.wrapping_add((self.growth_split_angle.to_bits() as u64).wrapping_mul(823));
+        hash =
+            hash.wrapping_add((self.growth_phyllotaxis_angle.to_bits() as u64).wrapping_mul(827));
+        // Manifold mesher parameters
+        hash = hash.wrapping_add((self.manifold_mesh_enabled as u64).wrapping_mul(773));
+        hash = hash.wrapping_add((self.pivot_painter_enabled as u64).wrapping_mul(787));
+        // Multiple stems parameters
+        hash = hash.wrapping_add((self.stem_count as u64).wrapping_mul(797));
+        hash = hash.wrapping_add((self.stem_spread.to_bits() as u64).wrapping_mul(809));
         // Floor avoidance parameters
         hash = hash.wrapping_add((self.floor_avoidance as u64).wrapping_mul(523));
         hash = hash.wrapping_add((self.floor_level.to_bits() as u64).wrapping_mul(541));
@@ -1125,6 +1218,8 @@ impl PixyTree {
         hash = hash.wrapping_add((self.pipe_radius_enabled as u64).wrapping_mul(593));
         hash = hash.wrapping_add((self.pipe_radius_exponent.to_bits() as u64).wrapping_mul(599));
         hash = hash.wrapping_add((self.pipe_radius_min.to_bits() as u64).wrapping_mul(601));
+        hash = hash
+            .wrapping_add((self.pipe_radius_constant_growth.to_bits() as u64).wrapping_mul(769));
         // Texture parameters (use instance_id as proxy for texture change detection)
         if let Some(ref tex) = self.bark_texture {
             hash = hash.wrapping_add((tex.instance_id().to_i64() as u64).wrapping_mul(607));
@@ -1165,187 +1260,253 @@ impl PixyTree {
 
         self.clear();
 
-        // 1. Generate branches (collect all first, then generate meshes)
-        let mut config = self.create_branch_config();
-        let mut rng = SeededRng::new(self.seed);
+        // Calculate stem offsets for multi-stem support
+        let stem_offsets: Vec<Vector3> = if self.stem_count > 1 {
+            (0..self.stem_count)
+                .map(|i| {
+                    let angle = i as f32 / self.stem_count as f32 * std::f32::consts::TAU;
+                    Vector3::new(
+                        angle.cos() * self.stem_spread,
+                        0.0,
+                        angle.sin() * self.stem_spread,
+                    )
+                })
+                .collect()
+        } else {
+            vec![Vector3::ZERO]
+        };
 
-        // Apply preview recursion depth override
-        if self.preview_recursion_depth >= 0 {
-            config.branch_recursion = self.preview_recursion_depth;
-        }
+        let mut all_mesh_data = MeshData::new();
+        let mut all_branch_segments: Vec<BranchSegment> = Vec::new();
 
-        let mut primary_branches = generate_branch_origins(&config, &mut rng);
+        for (stem_idx, &stem_offset) in stem_offsets.iter().enumerate() {
+            // 1. Generate branches (collect all first, then generate meshes)
+            let mut config = self.create_branch_config();
+            // Vary seed per stem for unique branching
+            let stem_seed = self.seed.wrapping_add(stem_idx as i32 * 1337);
+            let mut rng = SeededRng::new(stem_seed);
+            config.seed = stem_seed;
 
-        // Apply preview branch limit
-        if self.preview_branch_limit > 0 {
-            primary_branches.truncate(self.preview_branch_limit as usize);
-        }
-
-        // Default branch segments (used when adaptive resolution is off)
-        let default_branch_segments = (self.radial_segments / 2).max(4);
-
-        // Collect all branches (with their collar info for later mesh generation)
-        let mut all_branches: Vec<BranchSegment> = Vec::new();
-        let mut stub_branches: Vec<BranchSegment> = Vec::new(); // Stub segments from splits
-
-        // Collect leader branch if enabled
-        if self.trunk_termination == TrunkTermination::LeaderBranch {
-            let leader = self.create_leader_branch();
-            all_branches.push(leader.clone());
-
-            // Collect sub-branches on leader if enabled
-            if self.leader_has_branches {
-                let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
-                all_branches.extend(sub_branches);
+            // Apply preview recursion depth override
+            if self.preview_recursion_depth >= 0 {
+                config.branch_recursion = self.preview_recursion_depth;
             }
-        }
 
-        // Collect all primary branches and their sub-branches
-        for branch in &primary_branches {
-            // Check for branch splitting
-            if let Some((stub, split1, split2)) = generate_split_branches(branch, &config, &mut rng)
-            {
-                // Store stub separately (it has no collar)
-                stub_branches.push(stub);
+            let mut primary_branches = generate_branch_origins(&config, &mut rng);
 
-                // Collect both split branches
-                all_branches.push(split1.clone());
-                all_branches.push(split2.clone());
-
-                // Sub-branches from split branches
-                let sub1 = generate_sub_branches(&split1, &config, &mut rng, 0);
-                let sub2 = generate_sub_branches(&split2, &config, &mut rng, 0);
-                all_branches.extend(sub1);
-                all_branches.extend(sub2);
-            } else {
-                // Normal branch
-                all_branches.push(branch.clone());
-
-                // Collect sub-branches recursively
-                let sub_branches = generate_sub_branches(branch, &config, &mut rng, 0);
-                all_branches.extend(sub_branches);
+            // Apply preview branch limit
+            if self.preview_branch_limit > 0 {
+                primary_branches.truncate(self.preview_branch_limit as usize);
             }
-        }
 
-        // 1.5. Apply pipe radius model if enabled (before mesh generation)
-        if self.pipe_radius_enabled {
-            apply_pipe_radius_model(
-                &mut all_branches,
-                self.pipe_radius_exponent,
-                self.pipe_radius_min,
-            );
-            // Also apply to stub branches
-            apply_pipe_radius_model(
-                &mut stub_branches,
-                self.pipe_radius_exponent,
-                self.pipe_radius_min,
-            );
-        }
+            // Default branch segments (used when adaptive resolution is off)
+            let default_branch_segments = (self.radial_segments / 2).max(4);
 
-        // 2. Generate trunk mesh data
-        let mut mesh_data = self.create_trunk_mesh_data();
+            // Collect all branches (with their collar info for later mesh generation)
+            let mut all_branches: Vec<BranchSegment> = Vec::new();
+            let mut stub_branches: Vec<BranchSegment> = Vec::new(); // Stub segments from splits
 
-        // 2.5. Generate stub meshes (from splits, no collars)
-        for stub in &stub_branches {
-            let stub_segments = if self.adaptive_resolution {
-                self.get_radial_segments_for_radius(stub.base_radius)
-            } else {
-                default_branch_segments
-            };
-            let stub_mesh = generate_branch_mesh_with_resolution(
-                stub,
-                stub_segments,
-                self.branch_twist,
-                self.gravity_strength,
-                self.stiffness,
-                self.length_resolution,
-            );
-            mesh_data.extend(&stub_mesh);
-        }
+            // Collect leader branch if enabled
+            if self.trunk_termination == TrunkTermination::LeaderBranch {
+                let leader = self.create_leader_branch();
+                all_branches.push(leader.clone());
 
-        // 3. Generate branch meshes (with collars for primary branches)
-        for branch in &all_branches {
-            // Generate branch collar for depth-0 branches (primary branches from trunk)
-            if self.branch_collar_enabled && branch.depth == 0 {
-                // Calculate trunk radius at branch height
-                let t = branch.start.y / self.trunk_height;
-                let taper_factor = t.powf(self.trunk_taper_curve);
-                let base_r = self.trunk_radius * self.trunk_flare;
-                let tip_r = self.trunk_radius * self.trunk_taper;
-                let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
+                // Collect sub-branches on leader if enabled
+                if self.leader_has_branches {
+                    let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
+                    all_branches.extend(sub_branches);
+                }
+            }
 
-                let collar = generate_branch_collar(
-                    branch.start,
-                    branch.direction,
-                    trunk_r_at_height,
-                    branch.base_radius,
-                    branch.base_radius * self.branch_collar_length,
-                    self.radial_segments / 2,
+            // Collect all primary branches and their sub-branches
+            for branch in &primary_branches {
+                // Check for branch splitting
+                if let Some((stub, split1, split2)) =
+                    generate_split_branches(branch, &config, &mut rng)
+                {
+                    // Store stub separately (it has no collar)
+                    stub_branches.push(stub);
+
+                    // Collect both split branches
+                    all_branches.push(split1.clone());
+                    all_branches.push(split2.clone());
+
+                    // Sub-branches from split branches
+                    let sub1 = generate_sub_branches(&split1, &config, &mut rng, 0);
+                    let sub2 = generate_sub_branches(&split2, &config, &mut rng, 0);
+                    all_branches.extend(sub1);
+                    all_branches.extend(sub2);
+                } else {
+                    // Normal branch
+                    all_branches.push(branch.clone());
+
+                    // Collect sub-branches recursively
+                    let sub_branches = generate_sub_branches(branch, &config, &mut rng, 0);
+                    all_branches.extend(sub_branches);
+                }
+            }
+
+            // 1.5. Apply pipe radius model if enabled (before mesh generation)
+            if self.pipe_radius_enabled {
+                apply_pipe_radius_model(
+                    &mut all_branches,
+                    self.pipe_radius_exponent,
+                    self.pipe_radius_min,
+                    self.pipe_radius_constant_growth,
                 );
-                mesh_data.extend(&collar);
-            }
-
-            // Generate branch mesh
-            let branch_seg_count = if self.adaptive_resolution {
-                self.get_radial_segments_for_radius(branch.base_radius)
-            } else if branch.depth > 0 {
-                4 // Sub-branches get fewer segments
-            } else {
-                default_branch_segments
-            };
-            let branch_mesh = generate_branch_mesh_with_resolution(
-                branch,
-                branch_seg_count,
-                self.branch_twist,
-                self.gravity_strength,
-                self.stiffness,
-                self.length_resolution,
-            );
-            mesh_data.extend(&branch_mesh);
-        }
-
-        // 4. Apply mesh smoothing if enabled
-        if self.smooth_enabled && self.smooth_iterations > 0 {
-            if !mesh_data.smooth_weights.is_empty()
-                && mesh_data.smooth_weights.len() == mesh_data.vertices.len()
-            {
-                // Use weighted smoothing (stronger at junctions, lighter on branches)
-                laplacian_smooth_weighted(
-                    &mut mesh_data.vertices,
-                    &mesh_data.indices,
-                    &mesh_data.smooth_weights,
-                    self.smooth_iterations as u32,
-                    self.smooth_factor,
-                );
-            } else {
-                laplacian_smooth(
-                    &mut mesh_data.vertices,
-                    &mesh_data.indices,
-                    self.smooth_iterations as u32,
-                    self.smooth_factor,
+                // Also apply to stub branches
+                apply_pipe_radius_model(
+                    &mut stub_branches,
+                    self.pipe_radius_exponent,
+                    self.pipe_radius_min,
+                    self.pipe_radius_constant_growth,
                 );
             }
-            // Recalculate normals after smoothing
-            recalculate_normals(
-                &mesh_data.vertices,
-                &mesh_data.indices,
-                &mut mesh_data.normals,
-            );
-        }
+
+            // 2. Generate trunk mesh data
+            let mut mesh_data = self.create_trunk_mesh_data();
+
+            if self.manifold_mesh_enabled {
+                // Manifold mesher path: convert branches to tree graph and generate watertight mesh
+                let branch_trees = segments_to_tree(&all_branches);
+                let positions: Vec<Vector3> = branch_trees
+                    .iter()
+                    .map(|_| Vector3::ZERO) // Positions relative to trunk
+                    .collect();
+                let manifold_config = ManifoldMesherConfig {
+                    radial_resolution: self.radial_segments.max(4) as usize,
+                    smooth_iterations: if self.smooth_enabled {
+                        self.smooth_iterations as u32
+                    } else {
+                        0
+                    },
+                    smooth_factor: self.smooth_factor,
+                    pivot_painter_enabled: self.pivot_painter_enabled,
+                };
+                let manifold_result =
+                    crate::manifold_mesher::mesh_tree(&branch_trees, &positions, &manifold_config);
+                mesh_data.extend(&manifold_result.mesh);
+            } else {
+                // Legacy per-branch cylinder path
+                // 2.5. Generate stub meshes (from splits, no collars)
+                for stub in &stub_branches {
+                    let stub_segments = if self.adaptive_resolution {
+                        self.get_radial_segments_for_radius(stub.base_radius)
+                    } else {
+                        default_branch_segments
+                    };
+                    let stub_mesh = generate_branch_mesh_with_resolution(
+                        stub,
+                        stub_segments,
+                        self.branch_twist,
+                        self.gravity_strength,
+                        self.stiffness,
+                        self.length_resolution,
+                    );
+                    mesh_data.extend(&stub_mesh);
+                }
+
+                // 3. Generate branch meshes (with collars for primary branches)
+                for branch in &all_branches {
+                    // Generate branch collar for depth-0 branches (primary branches from trunk)
+                    if self.branch_collar_enabled && branch.depth == 0 {
+                        // Calculate trunk radius at branch height
+                        let t = branch.start.y / self.trunk_height;
+                        let taper_factor = t.powf(self.trunk_taper_curve);
+                        let base_r = self.trunk_radius * self.trunk_flare;
+                        let tip_r = self.trunk_radius * self.trunk_taper;
+                        let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
+
+                        let collar = generate_branch_collar(
+                            branch.start,
+                            branch.direction,
+                            trunk_r_at_height,
+                            branch.base_radius,
+                            branch.base_radius * self.branch_collar_length,
+                            self.radial_segments / 2,
+                        );
+                        mesh_data.extend(&collar);
+                    }
+
+                    // Generate branch mesh
+                    let branch_seg_count = if self.adaptive_resolution {
+                        self.get_radial_segments_for_radius(branch.base_radius)
+                    } else if branch.depth > 0 {
+                        4 // Sub-branches get fewer segments
+                    } else {
+                        default_branch_segments
+                    };
+                    let branch_mesh = generate_branch_mesh_with_resolution(
+                        branch,
+                        branch_seg_count,
+                        self.branch_twist,
+                        self.gravity_strength,
+                        self.stiffness,
+                        self.length_resolution,
+                    );
+                    mesh_data.extend(&branch_mesh);
+                }
+
+                // 4. Apply mesh smoothing if enabled
+                if self.smooth_enabled && self.smooth_iterations > 0 {
+                    if !mesh_data.smooth_weights.is_empty()
+                        && mesh_data.smooth_weights.len() == mesh_data.vertices.len()
+                    {
+                        // Use weighted smoothing (stronger at junctions, lighter on branches)
+                        laplacian_smooth_weighted(
+                            &mut mesh_data.vertices,
+                            &mesh_data.indices,
+                            &mesh_data.smooth_weights,
+                            self.smooth_iterations as u32,
+                            self.smooth_factor,
+                        );
+                    } else {
+                        laplacian_smooth(
+                            &mut mesh_data.vertices,
+                            &mesh_data.indices,
+                            self.smooth_iterations as u32,
+                            self.smooth_factor,
+                        );
+                    }
+                    // Recalculate normals after smoothing
+                    recalculate_normals(
+                        &mesh_data.vertices,
+                        &mesh_data.indices,
+                        &mut mesh_data.normals,
+                    );
+                }
+            }
+
+            // Apply stem offset to all vertices
+            if stem_offset != Vector3::ZERO {
+                for v in &mut mesh_data.vertices {
+                    *v += stem_offset;
+                }
+                // Also offset branches for foliage generation
+                for b in &mut all_branches {
+                    b.start += stem_offset;
+                }
+            }
+
+            // Accumulate into combined mesh
+            all_mesh_data.extend(&mesh_data);
+            all_branch_segments.extend(all_branches);
+        } // end stem loop
 
         // 5. Build final trunk/branch mesh
         let mesh = self.build_array_mesh(
-            mesh_data.vertices,
-            mesh_data.normals,
-            mesh_data.uvs,
-            mesh_data.indices,
+            all_mesh_data.vertices,
+            all_mesh_data.normals,
+            all_mesh_data.uvs,
+            all_mesh_data.indices,
         );
         self.apply_mesh(mesh);
 
         // 5. Generate foliage
         if self.foliage_enabled {
             let foliage_config = self.create_foliage_config();
-            let branch_infos = self.branches_to_branch_infos(&all_branches);
+            let branch_infos = self.branches_to_branch_infos(&all_branch_segments);
+            let mut rng = SeededRng::new(self.seed);
             let leaves = collect_leaf_points(&branch_infos, &foliage_config, &mut rng);
 
             if !leaves.is_empty() {
@@ -1430,6 +1591,8 @@ impl PixyTree {
             branch_length_curve_power: self.branch_length_curve_power,
             branch_radius_curve_end: self.branch_radius_curve_end,
             branch_radius_curve_power: self.branch_radius_curve_power,
+            crown_base_size: self.crown_base_size,
+            crown_height: self.crown_height,
         }
     }
 
@@ -1949,6 +2112,10 @@ impl PixyTree {
             lateral_radius_ratio: 0.8,
             secondary_growth: self.secondary_growth,
             competitive_vigor: self.competitive_vigor,
+            trunk_resolution: self.growth_trunk_resolution,
+            trunk_up_attraction: self.growth_trunk_up_attraction,
+            split_angle: self.growth_split_angle,
+            phyllotaxis_angle: self.growth_phyllotaxis_angle,
         };
 
         // Apply growth preset if not Custom
@@ -1981,6 +2148,7 @@ impl PixyTree {
                 &mut branch_segments,
                 self.pipe_radius_exponent,
                 self.pipe_radius_min,
+                self.pipe_radius_constant_growth,
             );
         }
 
@@ -1988,77 +2156,102 @@ impl PixyTree {
         let mut mesh_data = self.create_trunk_mesh_data();
 
         // 6. Generate branch meshes
-        let default_branch_mesh_segments = (self.radial_segments / 2).max(4);
         let mut all_branches: Vec<BranchSegment> = Vec::new();
 
-        for branch in &branch_segments {
-            // Skip trunk-like segments (they're part of the trunk mesh)
-            if branch.depth == 0 && branch.start.y < 0.1 {
-                continue;
-            }
+        // Filter out trunk-like segments
+        let renderable_branches: Vec<&BranchSegment> = branch_segments
+            .iter()
+            .filter(|b| !(b.depth == 0 && b.start.y < 0.1))
+            .collect();
 
-            // Generate branch collar for smooth trunk-branch junction
-            if self.branch_collar_enabled && branch.depth == 0 {
-                let t = branch.start.y / self.trunk_height;
-                let taper_factor = t.powf(self.trunk_taper_curve);
-                let base_r = self.trunk_radius * self.trunk_flare;
-                let tip_r = self.trunk_radius * self.trunk_taper;
-                let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
-
-                let collar = generate_branch_collar(
-                    branch.start,
-                    branch.direction,
-                    trunk_r_at_height,
-                    branch.base_radius,
-                    branch.base_radius * self.branch_collar_length,
-                    self.radial_segments / 2,
-                );
-                mesh_data.extend(&collar);
-            }
-
-            // Generate branch mesh
-            let branch_seg_count = if self.adaptive_resolution {
-                self.get_radial_segments_for_radius(branch.base_radius)
-            } else {
-                default_branch_mesh_segments
+        if self.manifold_mesh_enabled {
+            // Manifold mesher path: convert to tree and generate watertight mesh
+            let filtered: Vec<BranchSegment> =
+                renderable_branches.iter().map(|b| (*b).clone()).collect();
+            let branch_trees = segments_to_tree(&filtered);
+            let positions: Vec<Vector3> = branch_trees.iter().map(|_| Vector3::ZERO).collect();
+            let manifold_config = ManifoldMesherConfig {
+                radial_resolution: self.radial_segments.max(4) as usize,
+                smooth_iterations: if self.smooth_enabled {
+                    self.smooth_iterations as u32
+                } else {
+                    0
+                },
+                smooth_factor: self.smooth_factor,
+                pivot_painter_enabled: self.pivot_painter_enabled,
             };
-            let branch_mesh = generate_branch_mesh_with_resolution(
-                branch,
-                branch_seg_count,
-                self.branch_twist,
-                self.gravity_strength,
-                self.stiffness,
-                self.length_resolution,
-            );
-            mesh_data.extend(&branch_mesh);
-            all_branches.push(branch.clone());
-        }
+            let manifold_result =
+                crate::manifold_mesher::mesh_tree(&branch_trees, &positions, &manifold_config);
+            mesh_data.extend(&manifold_result.mesh);
+            all_branches = filtered;
+        } else {
+            // Legacy per-branch cylinder path
+            let default_branch_mesh_segments = (self.radial_segments / 2).max(4);
 
-        // 7. Apply mesh smoothing if enabled
-        if self.smooth_enabled && self.smooth_iterations > 0 {
-            if !mesh_data.smooth_weights.is_empty()
-                && mesh_data.smooth_weights.len() == mesh_data.vertices.len()
-            {
-                laplacian_smooth_weighted(
-                    &mut mesh_data.vertices,
-                    &mesh_data.indices,
-                    &mesh_data.smooth_weights,
-                    self.smooth_iterations as u32,
-                    self.smooth_factor,
+            for branch in &renderable_branches {
+                // Generate branch collar for smooth trunk-branch junction
+                if self.branch_collar_enabled && branch.depth == 0 {
+                    let t = branch.start.y / self.trunk_height;
+                    let taper_factor = t.powf(self.trunk_taper_curve);
+                    let base_r = self.trunk_radius * self.trunk_flare;
+                    let tip_r = self.trunk_radius * self.trunk_taper;
+                    let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
+
+                    let collar = generate_branch_collar(
+                        branch.start,
+                        branch.direction,
+                        trunk_r_at_height,
+                        branch.base_radius,
+                        branch.base_radius * self.branch_collar_length,
+                        self.radial_segments / 2,
+                    );
+                    mesh_data.extend(&collar);
+                }
+
+                // Generate branch mesh
+                let branch_seg_count = if self.adaptive_resolution {
+                    self.get_radial_segments_for_radius(branch.base_radius)
+                } else {
+                    default_branch_mesh_segments
+                };
+                let branch_mesh = generate_branch_mesh_with_resolution(
+                    branch,
+                    branch_seg_count,
+                    self.branch_twist,
+                    self.gravity_strength,
+                    self.stiffness,
+                    self.length_resolution,
                 );
-            } else {
-                laplacian_smooth(
-                    &mut mesh_data.vertices,
+                mesh_data.extend(&branch_mesh);
+                all_branches.push((*branch).clone());
+            }
+
+            // 7. Apply mesh smoothing if enabled
+            if self.smooth_enabled && self.smooth_iterations > 0 {
+                if !mesh_data.smooth_weights.is_empty()
+                    && mesh_data.smooth_weights.len() == mesh_data.vertices.len()
+                {
+                    laplacian_smooth_weighted(
+                        &mut mesh_data.vertices,
+                        &mesh_data.indices,
+                        &mesh_data.smooth_weights,
+                        self.smooth_iterations as u32,
+                        self.smooth_factor,
+                    );
+                } else {
+                    laplacian_smooth(
+                        &mut mesh_data.vertices,
+                        &mesh_data.indices,
+                        self.smooth_iterations as u32,
+                        self.smooth_factor,
+                    );
+                }
+                recalculate_normals(
+                    &mesh_data.vertices,
                     &mesh_data.indices,
-                    self.smooth_iterations as u32,
-                    self.smooth_factor,
+                    &mut mesh_data.normals,
                 );
             }
-            recalculate_normals(
-                &mesh_data.vertices,
-                &mesh_data.indices,
-                &mut mesh_data.normals,
-            );
         }
 
         // 8. Build final trunk/branch mesh
