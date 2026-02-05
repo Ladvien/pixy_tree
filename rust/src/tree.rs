@@ -4,9 +4,10 @@ use godot::classes::{ArrayMesh, Engine, MeshInstance3D, StandardMaterial3D, Text
 use godot::prelude::*;
 
 use crate::branch::{
-    apply_pipe_radius_model, generate_branch_collar, generate_branch_mesh_with_resolution,
-    generate_branch_origins, generate_branch_origins_multi_segment, generate_split_branches,
-    generate_sub_branches, BranchConfig, BranchSegment, MeshData, SeededRng,
+    apply_pipe_radius_model, check_branch_collision, generate_branch_collar,
+    generate_branch_mesh_with_resolution, generate_branch_origins,
+    generate_branch_origins_multi_segment, generate_split_branches, generate_sub_branches,
+    BranchBounds, BranchConfig, BranchSegment, BranchSpatialHash, MeshData, SeededRng,
 };
 use crate::crown_shape::CrownShape;
 use crate::foliage::{
@@ -18,7 +19,10 @@ use crate::growth::{
 };
 use crate::manifold_mesher::{segments_to_tree, ManifoldMesherConfig};
 use crate::property::{BranchProperty, PropertyMode};
-use crate::smoothing::{laplacian_smooth, laplacian_smooth_weighted, recalculate_normals};
+use crate::smoothing::{
+    average_normals_within_epsilon, laplacian_smooth, laplacian_smooth_weighted,
+    recalculate_normals,
+};
 use crate::tree_preset::{
     BonsaiStyle, BonsaiStyleValues, GrowthPreset, GrowthPresetValues, ScaleModifier,
     ScaleModifierValues, SeasonModifier, SeasonModifierValues, StyleModifier, StyleModifierValues,
@@ -372,6 +376,11 @@ pub struct PixyTree {
     #[init(val = 0.0)]
     break_chance: f32,
 
+    /// Issue B: Skip branches that would intersect existing branches
+    #[export]
+    #[init(val = false)]
+    branch_collision_avoidance: bool,
+
     // ═══════════════════════════════════════════
     // Branch Splitting
     // ═══════════════════════════════════════════
@@ -435,6 +444,11 @@ pub struct PixyTree {
     #[export(range = (0.0, 1.0, 0.05))]
     #[init(val = 0.5)]
     smooth_factor: f32,
+
+    /// Issue C: Average normals at collar junctions to reduce visible seams
+    #[export]
+    #[init(val = true)]
+    smooth_collar_normals: bool,
 
     // ═══════════════════════════════════════════
     // Adaptive Mesh Resolution Settings
@@ -1164,6 +1178,7 @@ impl PixyTree {
 
         // Branch Randomness
         self.break_chance = 0.0;
+        self.branch_collision_avoidance = false;
 
         // Splitting
         self.split_enabled = false;
@@ -1181,6 +1196,7 @@ impl PixyTree {
         self.smooth_enabled = false;
         self.smooth_iterations = 2;
         self.smooth_factor = 0.5;
+        self.smooth_collar_normals = true;
 
         // Adaptive Resolution
         self.adaptive_resolution = false;
@@ -1464,6 +1480,7 @@ impl PixyTree {
         hash = hash.wrapping_add((self.root_flare_spread.to_bits() as u64).wrapping_mul(359));
         hash = hash.wrapping_add((self.root_flare_height.to_bits() as u64).wrapping_mul(367));
         hash = hash.wrapping_add((self.break_chance.to_bits() as u64).wrapping_mul(293));
+        hash = hash.wrapping_add((self.branch_collision_avoidance as u64).wrapping_mul(296));
         hash = hash.wrapping_add((self.stiffness.to_bits() as u64).wrapping_mul(307));
         // Trunk termination parameters
         hash = hash.wrapping_add((self.trunk_termination as u64).wrapping_mul(389));
@@ -1518,6 +1535,7 @@ impl PixyTree {
         hash = hash.wrapping_add((self.smooth_enabled as u64).wrapping_mul(547));
         hash = hash.wrapping_add((self.smooth_iterations as u64).wrapping_mul(557));
         hash = hash.wrapping_add((self.smooth_factor.to_bits() as u64).wrapping_mul(563));
+        hash = hash.wrapping_add((self.smooth_collar_normals as u64).wrapping_mul(566));
         // Adaptive resolution parameters
         hash = hash.wrapping_add((self.adaptive_resolution as u64).wrapping_mul(569));
         hash = hash.wrapping_add((self.resolution_scale.to_bits() as u64).wrapping_mul(571));
@@ -1702,7 +1720,12 @@ impl PixyTree {
                 }
             }
 
-            // 1.5. Apply pipe radius model if enabled (before mesh generation)
+            // 1.5. Apply collision avoidance if enabled (Issue B)
+            if self.branch_collision_avoidance {
+                all_branches = self.filter_colliding_branches(all_branches);
+            }
+
+            // 1.6. Apply pipe radius model if enabled (before mesh generation)
             if self.pipe_radius_enabled {
                 apply_pipe_radius_model(
                     &mut all_branches,
@@ -1771,10 +1794,22 @@ impl PixyTree {
                         let taper_factor = t.powf(self.trunk_taper_curve);
                         let base_r = self.trunk_radius * self.trunk_flare;
                         let tip_r = self.trunk_radius * self.trunk_taper;
-                        let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
+                        let nominal_trunk_r = base_r + (tip_r - base_r) * taper_factor;
 
                         // Compute trunk center at branch height (accounts for wobble)
                         let trunk_center = self.trunk_center_at_height(branch.start.y);
+
+                        // Issue A: Include root flare bulge in effective trunk radius
+                        // Calculate azimuthal angle from trunk center to branch start
+                        let radial_dir = Vector3::new(
+                            branch.start.x - trunk_center.x,
+                            0.0,
+                            branch.start.z - trunk_center.z,
+                        );
+                        let azimuth_angle = radial_dir.z.atan2(radial_dir.x);
+                        let root_bulge =
+                            self.compute_root_flare_bulge(branch.start.y, azimuth_angle);
+                        let trunk_r_at_height = nominal_trunk_r + root_bulge;
 
                         let collar = generate_branch_collar(
                             branch.start,
@@ -1834,6 +1869,17 @@ impl PixyTree {
                         &mesh_data.vertices,
                         &mesh_data.indices,
                         &mut mesh_data.normals,
+                    );
+                }
+
+                // Issue C: Average normals at collar junctions to reduce visible seams
+                if self.smooth_collar_normals && self.branch_collar_enabled {
+                    // Use a small epsilon based on average branch radius for this tree
+                    let epsilon = self.trunk_radius * 0.02;
+                    average_normals_within_epsilon(
+                        &mesh_data.vertices,
+                        &mut mesh_data.normals,
+                        epsilon,
                     );
                 }
             }
@@ -1942,6 +1988,10 @@ impl PixyTree {
             trunk_flare: self.trunk_flare,
             trunk_randomness: self.trunk_randomness,
             seed: self.seed,
+            // Issue A: Pass root flare params for branch origin and collar calculation
+            root_flare_count: self.root_flare_count,
+            root_flare_spread: self.root_flare_spread,
+            root_flare_height: self.root_flare_height,
             trunk_twist: self.trunk_twist,
             branch_twist: self.branch_twist,
             gravity_strength: self.gravity_strength,
@@ -2159,6 +2209,70 @@ impl PixyTree {
         };
 
         Vector3::new(wobble_x, height, wobble_z)
+    }
+
+    /// Compute root flare bulge at a given height and azimuthal angle.
+    /// Returns additional radius beyond the base trunk radius.
+    /// Issue A: Used for collar generation to match visually bulged trunk surface.
+    fn compute_root_flare_bulge(&self, height: f32, angle: f32) -> f32 {
+        let root_height = self.root_flare_height * self.trunk_height;
+        let has_root_flares = self.root_flare_count > 0 && self.root_flare_spread > 0.0;
+
+        if !has_root_flares || height >= root_height {
+            return 0.0;
+        }
+
+        // Blend factor: 1.0 at base, 0.0 at root_height
+        let root_blend = 1.0 - (height / root_height);
+
+        // Base radius at trunk base (with flare)
+        let base_radius = self.trunk_radius * self.trunk_flare;
+
+        // Sinusoidal bulge based on angle - same formula as trunk mesh generation
+        let bulge_angle = angle * self.root_flare_count as f32;
+        // Use squared cosine for sharper, more defined root ridges
+        let raw_bulge = (bulge_angle.cos() * 0.5 + 0.5).powi(2);
+
+        raw_bulge * self.root_flare_spread * base_radius * root_blend
+    }
+
+    /// Issue B: Filter out branches that collide with existing branches.
+    /// Uses spatial hashing for efficient collision detection.
+    fn filter_colliding_branches(&self, branches: Vec<BranchSegment>) -> Vec<BranchSegment> {
+        if branches.is_empty() {
+            return branches;
+        }
+
+        // Use average branch length as cell size for spatial hash
+        let avg_length = branches.iter().map(|b| b.length).sum::<f32>() / branches.len() as f32;
+        let cell_size = avg_length * 0.5;
+
+        let mut spatial_hash = BranchSpatialHash::new(cell_size);
+        let mut bounds_list: Vec<BranchBounds> = Vec::new();
+        let mut filtered: Vec<BranchSegment> = Vec::new();
+
+        // Sort by depth so parent branches are added first
+        let mut sorted_branches = branches;
+        sorted_branches.sort_by_key(|b| b.depth);
+
+        for branch in sorted_branches {
+            let bounds = BranchBounds::from_segment(&branch);
+
+            // Check for collision with existing branches
+            let has_collision =
+                check_branch_collision(&branch, &filtered, &spatial_hash, &bounds_list);
+
+            if !has_collision {
+                // Add to spatial hash and keep
+                let idx = filtered.len();
+                spatial_hash.insert(idx, &bounds);
+                bounds_list.push(bounds);
+                filtered.push(branch);
+            }
+            // Colliding branches are silently dropped
+        }
+
+        filtered
     }
 
     fn create_trunk_mesh_data(&self) -> MeshData {
@@ -2562,6 +2676,11 @@ impl PixyTree {
         // 4. Convert growth tree to branch segments
         let mut branch_segments = convert_growth_to_branches(&grown_tree, config.trunk_height, 0);
 
+        // 4.4. Apply collision avoidance if enabled (Issue B)
+        if self.branch_collision_avoidance {
+            branch_segments = self.filter_colliding_branches(branch_segments);
+        }
+
         // 4.5. Apply pipe radius model if enabled
         if self.pipe_radius_enabled {
             apply_pipe_radius_model(
@@ -2615,10 +2734,21 @@ impl PixyTree {
                     let taper_factor = t.powf(self.trunk_taper_curve);
                     let base_r = self.trunk_radius * self.trunk_flare;
                     let tip_r = self.trunk_radius * self.trunk_taper;
-                    let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
+                    let nominal_trunk_r = base_r + (tip_r - base_r) * taper_factor;
 
                     // Compute trunk center at branch height (accounts for wobble)
                     let trunk_center = self.trunk_center_at_height(branch.start.y);
+
+                    // Issue A: Include root flare bulge in effective trunk radius
+                    // Calculate azimuthal angle from trunk center to branch start
+                    let radial_dir = Vector3::new(
+                        branch.start.x - trunk_center.x,
+                        0.0,
+                        branch.start.z - trunk_center.z,
+                    );
+                    let azimuth_angle = radial_dir.z.atan2(radial_dir.x);
+                    let root_bulge = self.compute_root_flare_bulge(branch.start.y, azimuth_angle);
+                    let trunk_r_at_height = nominal_trunk_r + root_bulge;
 
                     let collar = generate_branch_collar(
                         branch.start,
@@ -2675,6 +2805,16 @@ impl PixyTree {
                     &mesh_data.vertices,
                     &mesh_data.indices,
                     &mut mesh_data.normals,
+                );
+            }
+
+            // Issue C: Average normals at collar junctions to reduce visible seams
+            if self.smooth_collar_normals && self.branch_collar_enabled {
+                let epsilon = self.trunk_radius * 0.02;
+                average_normals_within_epsilon(
+                    &mesh_data.vertices,
+                    &mut mesh_data.normals,
+                    epsilon,
                 );
             }
         }

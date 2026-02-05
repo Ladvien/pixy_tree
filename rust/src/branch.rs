@@ -167,6 +167,10 @@ pub struct BranchConfig {
     pub trunk_flare: f32,
     pub trunk_randomness: f32,
     pub seed: i32,
+    // Root flare settings (for branch origin and collar radius calculation)
+    pub root_flare_count: i32,
+    pub root_flare_spread: f32,
+    pub root_flare_height: f32,
     // Twist settings (used for branch origin positioning and mesh generation)
     pub trunk_twist: f32,
     pub branch_twist: f32,
@@ -273,6 +277,268 @@ fn get_perpendicular(dir: Vector3) -> Vector3 {
         Vector3::RIGHT
     };
     dir.cross(up).normalized()
+}
+
+/// Calculate root flare bulge at a given height and azimuthal angle.
+/// Returns additional radius beyond the base trunk radius.
+///
+/// # Arguments
+/// * `height` - Height on trunk in world units
+/// * `angle` - Azimuthal angle in radians around trunk
+/// * `config` - Branch config containing root flare parameters
+///
+/// # Returns
+/// Additional radius due to root flare bulge (0.0 if outside root zone)
+pub fn root_flare_bulge_at(height: f32, angle: f32, config: &BranchConfig) -> f32 {
+    let root_height = config.root_flare_height * config.trunk_height;
+    let has_root_flares = config.root_flare_count > 0 && config.root_flare_spread > 0.0;
+
+    if !has_root_flares || height >= root_height {
+        return 0.0;
+    }
+
+    // Blend factor: 1.0 at base, 0.0 at root_height
+    let root_blend = 1.0 - (height / root_height);
+
+    // Base radius at trunk base (with flare)
+    let base_radius = config.trunk_radius * config.trunk_flare;
+
+    // Sinusoidal bulge based on angle - same formula as trunk mesh generation
+    let bulge_angle = angle * config.root_flare_count as f32;
+    // Use squared cosine for sharper, more defined root ridges
+    let raw_bulge = (bulge_angle.cos() * 0.5 + 0.5).powi(2);
+
+    raw_bulge * config.root_flare_spread * base_radius * root_blend
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue B: Branch Collision Avoidance
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+
+/// Branch bounds represented as a capsule (line segment with radius).
+/// Used for collision detection between branches.
+#[derive(Clone)]
+pub struct BranchBounds {
+    pub start: Vector3,
+    pub end: Vector3,
+    pub radius: f32,
+}
+
+impl BranchBounds {
+    /// Create bounds from a branch segment
+    pub fn from_segment(segment: &BranchSegment) -> Self {
+        Self {
+            start: segment.start,
+            end: segment.start + segment.direction * segment.length,
+            radius: segment.base_radius.max(segment.tip_radius),
+        }
+    }
+
+    /// Check if this capsule intersects another capsule.
+    /// Uses closest point between line segments algorithm.
+    pub fn intersects(&self, other: &BranchBounds) -> bool {
+        // Get closest points between the two line segments
+        let (_, _, dist_sq) =
+            closest_points_between_segments(self.start, self.end, other.start, other.end);
+
+        // Combined radius (sum of capsule radii)
+        let combined_radius = self.radius + other.radius;
+
+        // Intersects if distance is less than combined radii
+        dist_sq < combined_radius * combined_radius
+    }
+}
+
+/// Find closest points between two line segments.
+/// Returns (point on segment 1, point on segment 2, squared distance)
+fn closest_points_between_segments(
+    p1: Vector3,
+    q1: Vector3,
+    p2: Vector3,
+    q2: Vector3,
+) -> (Vector3, Vector3, f32) {
+    let d1 = q1 - p1; // Direction of segment 1
+    let d2 = q2 - p2; // Direction of segment 2
+    let r = p1 - p2;
+
+    let a = d1.dot(d1); // Squared length of segment 1
+    let e = d2.dot(d2); // Squared length of segment 2
+    let f = d2.dot(r);
+
+    let epsilon = 1e-7;
+
+    let (s, t) = if a <= epsilon && e <= epsilon {
+        // Both segments are points
+        (0.0, 0.0)
+    } else if a <= epsilon {
+        // Segment 1 is a point
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = d1.dot(r);
+        if e <= epsilon {
+            // Segment 2 is a point
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            // General case
+            let b = d1.dot(d2);
+            let denom = a * e - b * b;
+
+            let s = if denom.abs() > epsilon {
+                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            // Compute t for point on segment 2 closest to point on segment 1
+            let t_num = b * s + f;
+            let t = if t_num < 0.0 {
+                0.0
+            } else if t_num > e {
+                1.0
+            } else {
+                t_num / e
+            };
+
+            // Recompute s based on t if t was clamped
+            let s = if t_num < 0.0 {
+                (-c / a).clamp(0.0, 1.0)
+            } else if t_num > e {
+                ((b - c) / a).clamp(0.0, 1.0)
+            } else {
+                s
+            };
+
+            (s, t)
+        }
+    };
+
+    let c1 = p1 + d1 * s;
+    let c2 = p2 + d2 * t;
+    let dist_sq = (c1 - c2).length_squared();
+
+    (c1, c2, dist_sq)
+}
+
+/// Spatial hash for efficient branch collision queries.
+/// Divides space into cells and stores branch indices per cell.
+pub struct BranchSpatialHash {
+    cell_size: f32,
+    cells: HashMap<(i32, i32, i32), Vec<usize>>,
+}
+
+impl BranchSpatialHash {
+    /// Create a new spatial hash with given cell size
+    pub fn new(cell_size: f32) -> Self {
+        Self {
+            cell_size: cell_size.max(0.1),
+            cells: HashMap::new(),
+        }
+    }
+
+    /// Get cell coordinates for a position
+    fn cell_coords(&self, pos: Vector3) -> (i32, i32, i32) {
+        (
+            (pos.x / self.cell_size).floor() as i32,
+            (pos.y / self.cell_size).floor() as i32,
+            (pos.z / self.cell_size).floor() as i32,
+        )
+    }
+
+    /// Insert a branch bounds into the hash
+    pub fn insert(&mut self, idx: usize, bounds: &BranchBounds) {
+        // Get cell range covered by the bounds (start to end plus radius)
+        let min_cell = self.cell_coords(Vector3::new(
+            bounds.start.x.min(bounds.end.x) - bounds.radius,
+            bounds.start.y.min(bounds.end.y) - bounds.radius,
+            bounds.start.z.min(bounds.end.z) - bounds.radius,
+        ));
+        let max_cell = self.cell_coords(Vector3::new(
+            bounds.start.x.max(bounds.end.x) + bounds.radius,
+            bounds.start.y.max(bounds.end.y) + bounds.radius,
+            bounds.start.z.max(bounds.end.z) + bounds.radius,
+        ));
+
+        // Insert into all overlapping cells
+        for x in min_cell.0..=max_cell.0 {
+            for y in min_cell.1..=max_cell.1 {
+                for z in min_cell.2..=max_cell.2 {
+                    self.cells.entry((x, y, z)).or_default().push(idx);
+                }
+            }
+        }
+    }
+
+    /// Query for potential collisions with given bounds.
+    /// Returns indices of branches that might collide (broad phase).
+    pub fn query_potential(&self, bounds: &BranchBounds) -> Vec<usize> {
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        let min_cell = self.cell_coords(Vector3::new(
+            bounds.start.x.min(bounds.end.x) - bounds.radius,
+            bounds.start.y.min(bounds.end.y) - bounds.radius,
+            bounds.start.z.min(bounds.end.z) - bounds.radius,
+        ));
+        let max_cell = self.cell_coords(Vector3::new(
+            bounds.start.x.max(bounds.end.x) + bounds.radius,
+            bounds.start.y.max(bounds.end.y) + bounds.radius,
+            bounds.start.z.max(bounds.end.z) + bounds.radius,
+        ));
+
+        for x in min_cell.0..=max_cell.0 {
+            for y in min_cell.1..=max_cell.1 {
+                for z in min_cell.2..=max_cell.2 {
+                    if let Some(indices) = self.cells.get(&(x, y, z)) {
+                        for &idx in indices {
+                            if seen.insert(idx) {
+                                result.push(idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+/// Check if a candidate branch collides with existing branches.
+/// Returns true if collision detected.
+pub fn check_branch_collision(
+    candidate: &BranchSegment,
+    existing_branches: &[BranchSegment],
+    spatial_hash: &BranchSpatialHash,
+    existing_bounds: &[BranchBounds],
+) -> bool {
+    let candidate_bounds = BranchBounds::from_segment(candidate);
+    let potential = spatial_hash.query_potential(&candidate_bounds);
+
+    for idx in potential {
+        if candidate_bounds.intersects(&existing_bounds[idx]) {
+            // Skip parent-child connections (branches that share a start/end point)
+            let parent = &existing_branches[idx];
+            let parent_end = parent.start + parent.direction * parent.length;
+
+            // Check if candidate starts at parent's end (valid child connection)
+            let connection_dist = (candidate.start - parent_end).length();
+            if connection_dist < candidate.base_radius * 0.5 {
+                continue; // This is a parent-child connection, not a collision
+            }
+
+            // Check if candidate starts at parent's start (sibling from same origin)
+            let sibling_dist = (candidate.start - parent.start).length();
+            if sibling_dist < candidate.base_radius * 0.1 {
+                continue; // Siblings from same origin
+            }
+
+            return true; // Real collision
+        }
+    }
+
+    false
 }
 
 /// Generate split branches from a parent branch (Y-junction)
@@ -422,7 +688,12 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         let taper_factor = t.powf(config.trunk_taper_curve);
         let base_radius = config.trunk_radius * config.trunk_flare;
         let tip_radius = config.trunk_radius * config.trunk_taper;
-        let trunk_r = lerp(base_radius, tip_radius, taper_factor);
+        let nominal_trunk_r = lerp(base_radius, tip_radius, taper_factor);
+
+        // Issue A: Add root flare bulge to trunk radius at this angle
+        // This ensures branches in the root zone attach to the visually bulged surface
+        let root_bulge = root_flare_bulge_at(height, angle_rad, config);
+        let trunk_r = nominal_trunk_r + root_bulge;
 
         // Calculate trunk wobble offset at this height (must match create_trunk_mesh_data)
         let seed_f = config.seed as f32;
@@ -1087,42 +1358,46 @@ pub fn generate_branch_mesh_with_resolution(
         }
     }
 
-    // Build end basis for tip cap
-    let end_right = get_perpendicular(end_dir);
-    let end_forward = end_dir.cross(end_right);
-    let tip_twist_angle = branch_twist.to_radians();
+    // Issue D: Only generate tip cap for terminal branches (no sub-branches)
+    // Non-terminal branches have sub-branches that cover their tips
+    if branch.is_terminal {
+        // Build end basis for tip cap
+        let end_right = get_perpendicular(end_dir);
+        let end_forward = end_dir.cross(end_right);
+        let tip_twist_angle = branch_twist.to_radians();
 
-    // Add tip cap
-    let tip_center_idx = mesh.vertices.len() as i32;
-    mesh.vertices.push(end_pos);
-    mesh.normals.push(end_dir);
-    mesh.uvs.push(Vector2::new(0.5, 0.5));
-
-    // Tip ring vertices
-    for seg in 0..=segments {
-        let base_angle = (seg as f32 / segments as f32) * TAU;
-        let angle = base_angle + tip_twist_angle;
-        let local_x = angle.cos() * branch.tip_radius;
-        let local_z = angle.sin() * branch.tip_radius;
-
-        let offset = end_right * local_x + end_forward * local_z;
-        let vertex = end_pos + offset;
-
-        mesh.vertices.push(vertex);
+        // Add tip cap
+        let tip_center_idx = mesh.vertices.len() as i32;
+        mesh.vertices.push(end_pos);
         mesh.normals.push(end_dir);
-        mesh.uvs.push(Vector2::new(
-            0.5 + base_angle.cos() * 0.5,
-            0.5 + base_angle.sin() * 0.5,
-        ));
-    }
+        mesh.uvs.push(Vector2::new(0.5, 0.5));
 
-    // Tip cap triangles
-    let tip_ring_start = tip_center_idx + 1;
-    for seg in 0..segments {
-        let current = tip_ring_start + seg as i32;
-        let next = tip_ring_start + (seg + 1) as i32;
-        mesh.indices
-            .extend_from_slice(&[tip_center_idx, current, next]);
+        // Tip ring vertices
+        for seg in 0..=segments {
+            let base_angle = (seg as f32 / segments as f32) * TAU;
+            let angle = base_angle + tip_twist_angle;
+            let local_x = angle.cos() * branch.tip_radius;
+            let local_z = angle.sin() * branch.tip_radius;
+
+            let offset = end_right * local_x + end_forward * local_z;
+            let vertex = end_pos + offset;
+
+            mesh.vertices.push(vertex);
+            mesh.normals.push(end_dir);
+            mesh.uvs.push(Vector2::new(
+                0.5 + base_angle.cos() * 0.5,
+                0.5 + base_angle.sin() * 0.5,
+            ));
+        }
+
+        // Tip cap triangles
+        let tip_ring_start = tip_center_idx + 1;
+        for seg in 0..segments {
+            let current = tip_ring_start + seg as i32;
+            let next = tip_ring_start + (seg + 1) as i32;
+            mesh.indices
+                .extend_from_slice(&[tip_center_idx, current, next]);
+        }
     }
 
     mesh
@@ -2333,6 +2608,10 @@ mod tests {
             trunk_flare: 1.0,
             trunk_randomness: 0.0,
             seed: 42,
+            // Root flare settings (disabled in tests by default)
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.15,
             trunk_twist: 0.0,
             branch_twist: 0.0,
             gravity_strength: 0.0,
