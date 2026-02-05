@@ -298,8 +298,13 @@ impl Default for GrowthConfig {
 ///
 /// Creates a chain of `trunk_resolution * trunk_height` Ignored nodes,
 /// each with per-segment direction variation and taper. A Meristem is
-/// placed at the end of the chain to start growth.
-pub fn create_trunk_structure(config: &GrowthConfig) -> GrowthNode {
+/// placed at the end of the chain to start growth (unless suppress_tip_growth is true).
+///
+/// # Arguments
+/// * `config` - Growth configuration
+/// * `suppress_tip_growth` - If true, marks the tip as Ignored instead of Meristem
+///   (G51: when lateral_enabled=true, trunk tip should not grow to allow lateral dominance)
+pub fn create_trunk_structure(config: &GrowthConfig, suppress_tip_growth: bool) -> GrowthNode {
     let mut rng = SeededRng::new(config.seed);
 
     let segment_count = (config.trunk_resolution * config.trunk_height)
@@ -336,12 +341,20 @@ pub fn create_trunk_structure(config: &GrowthConfig) -> GrowthNode {
     let tip_radius = config.trunk_radius * config.trunk_taper;
     let top_position = current_pos;
 
+    // G51: When suppress_tip_growth is true, use Ignored instead of Meristem
+    // This allows lateral branches to dominate when lateral_enabled=true
+    let tip_type = if suppress_tip_growth {
+        GrowthNodeType::Ignored
+    } else {
+        GrowthNodeType::Meristem
+    };
+
     let mut apical_meristem = GrowthNode::new(
         top_position,
         current_dir,
         0.0, // Will be extended during growth
         tip_radius,
-        GrowthNodeType::Meristem,
+        tip_type,
     );
     apical_meristem.info.vigor = 1.0;
 
@@ -505,8 +518,7 @@ fn apply_growth_rules_recursive(
                 // Create extension
                 let new_direction = calculate_growth_direction(node, config, rng);
                 // G10 fix: C++ formula: branch_length * (vigor + 0.1)
-                // No random multiplier, no gravitropism multiplier
-                let child_length = config.branch_length * (vigor + 0.1);
+                // No random multiplier, no gravitropism multiplier (unused, kept as comment for reference)
                 // Use configurable extension taper (original: 0.95)
                 let new_radius = node.radius * config.extension_taper;
 
@@ -531,9 +543,6 @@ fn apply_growth_rules_recursive(
                 // G11 fix: Do NOT overwrite parent node length
                 // node.length stays as-is
                 new_children.push(extension);
-
-                // Store child_length for use by dormant activation length
-                let _ = child_length;
             }
 
             // Check for splitting (bifurcation) - only if we grew
@@ -1220,7 +1229,7 @@ mod tests {
             trunk_radius: 0.5,
             ..Default::default()
         };
-        let trunk = create_trunk_structure(&config);
+        let trunk = create_trunk_structure(&config, false);
 
         // Multi-segment trunk: first node is Ignored
         assert_eq!(trunk.info.node_type, GrowthNodeType::Ignored);
@@ -1252,7 +1261,7 @@ mod tests {
     #[test]
     fn test_vigor_distribution() {
         let config = GrowthConfig::default();
-        let mut trunk = create_trunk_structure(&config);
+        let mut trunk = create_trunk_structure(&config, false);
 
         calculate_vigor_ratios(&mut trunk, config.apical_dominance, false);
         distribute_vigor(&mut trunk, 1.0, config.apical_dominance);
@@ -1270,7 +1279,7 @@ mod tests {
             grow_threshold: 0.2,
             ..Default::default()
         };
-        let trunk = create_trunk_structure(&config);
+        let trunk = create_trunk_structure(&config, false);
         let grown = simulate_growth(trunk, &config);
 
         // Should have more structure after growth
@@ -1288,7 +1297,7 @@ mod tests {
             grow_threshold: 0.2,
             ..Default::default()
         };
-        let trunk = create_trunk_structure(&config);
+        let trunk = create_trunk_structure(&config, config.enable_lateral);
         let grown = simulate_growth(trunk, &config);
 
         // Should have more nodes than initial structure
@@ -1308,7 +1317,7 @@ mod tests {
             iterations: 2,
             ..Default::default()
         };
-        let trunk = create_trunk_structure(&config);
+        let trunk = create_trunk_structure(&config, false);
         let grown = simulate_growth(trunk, &config);
         let branches = convert_growth_to_branches(&grown, config.trunk_height, 0);
 

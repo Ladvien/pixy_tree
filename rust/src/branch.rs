@@ -255,9 +255,10 @@ fn lerp_vec3(a: Vector3, b: Vector3, t: f32) -> Vector3 {
     Vector3::new(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t))
 }
 
-/// Generate a random unit vector offset
-/// H1 fix: C++ random_vec(flatness) flattens vertical (Z in Z-up = Y in Y-up) BEFORE normalizing.
-/// This produces a different directional distribution than normalize-then-flatten.
+/// Generate a random vector offset (not normalized)
+/// H1/H10 fix: C++ random_vec(flatness) flattens vertical (Z in Z-up = Y in Y-up) BEFORE normalizing,
+/// but call sites normalize after combining with other vectors.
+/// Returning unnormalized matches C++ where callers do the final normalization.
 fn random_vec(rng: &mut SeededRng, flatness: f32) -> Vector3 {
     let mut v = Vector3::new(
         rng.range(-1.0, 1.0),
@@ -265,18 +266,21 @@ fn random_vec(rng: &mut SeededRng, flatness: f32) -> Vector3 {
         rng.range(-1.0, 1.0),
     );
     v.y *= 1.0 - flatness;
-    v.normalized()
+    v // H10: Remove .normalized() - call sites normalize after combining vectors
 }
 
 /// Get a perpendicular vector to the given direction
+/// H11 fix: Match C++ cross product order (tmp.cross(dir) not dir.cross(tmp))
+/// Use UP as primary reference unless dir is nearly vertical, then use RIGHT
 fn get_perpendicular(dir: Vector3) -> Vector3 {
     // Choose a vector that's not parallel to dir
-    let up = if dir.y.abs() < 0.9 {
-        Vector3::UP
-    } else {
+    // If dir is nearly vertical (Y-aligned), use RIGHT; otherwise use UP
+    let tmp = if dir.y.abs() > 0.95 {
         Vector3::RIGHT
+    } else {
+        Vector3::UP
     };
-    dir.cross(up).normalized()
+    tmp.cross(dir).normalized()
 }
 
 /// Calculate root flare bulge at a given height and azimuthal angle.
@@ -818,7 +822,7 @@ pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Ve
         );
         let tangent_len = tangent.length();
         if tangent_len > 0.001 {
-            tangent = tangent / tangent_len;
+            tangent /= tangent_len;
         }
 
         // Direction = lerp(trunk_direction, tangent, effective_angle / 90.0)
@@ -1733,11 +1737,12 @@ fn get_split_child_direction(
     rng: &mut SeededRng,
     floor_avoidance: bool,
 ) -> Vector3 {
-    let mut child_direction = random_vec(rng, 0.0);
-    child_direction = Vector3::new(
-        child_direction.y * parent_dir.z - child_direction.z * parent_dir.y,
-        child_direction.z * parent_dir.x - child_direction.x * parent_dir.z,
-        child_direction.x * parent_dir.y - child_direction.y * parent_dir.x,
+    let rand_dir = random_vec(rng, 0.0);
+    // Cross product to get perpendicular direction
+    let mut child_direction = Vector3::new(
+        rand_dir.y * parent_dir.z - rand_dir.z * parent_dir.y,
+        rand_dir.z * parent_dir.x - rand_dir.x * parent_dir.z,
+        rand_dir.x * parent_dir.y - rand_dir.y * parent_dir.x,
     ) + Vector3::UP * up_attraction * flatness;
 
     if flatness > 0.0 {
@@ -1752,6 +1757,12 @@ fn get_split_child_direction(
 
     if floor_avoidance {
         avoid_floor_check(position, &mut child_direction, 1.0);
+    }
+
+    // Normalize perpendicular before lerp to ensure proper angular interpolation
+    let perp_len = child_direction.length();
+    if perp_len > 0.001 {
+        child_direction = child_direction / perp_len;
     }
 
     child_direction = lerp_vec3(parent_dir, child_direction, split_angle / 90.0);
@@ -2301,7 +2312,7 @@ pub fn generate_branch_origins_multi_segment(
         );
         let tangent_len = tangent.length();
         if tangent_len > 0.001 {
-            tangent = tangent / tangent_len;
+            tangent /= tangent_len;
         }
 
         let base_dir = lerp_vec3(trunk_direction, tangent, effective_angle / 90.0);

@@ -91,11 +91,11 @@ pub struct PixyTree {
     // Trunk Settings
     // ═══════════════════════════════════════════
     #[export(range = (0.1, 50.0, 0.1))]
-    #[init(val = 5.0)]
+    #[init(val = 10.0)]
     trunk_height: f32,
 
     #[export(range = (0.05, 5.0, 0.05))]
-    #[init(val = 0.5)]
+    #[init(val = 0.3)]
     trunk_radius: f32,
 
     #[export(range = (3.0, 32.0, 1.0))]
@@ -217,7 +217,7 @@ pub struct PixyTree {
 
     /// Branch radius relative to trunk radius at attachment point
     #[export(range = (0.1, 0.8, 0.05))]
-    #[init(val = 0.3)]
+    #[init(val = 0.4)]
     branch_radius_ratio: f32,
 
     /// Taper from base to tip (0=none, 1=point) - used when taper_mode=Legacy
@@ -283,7 +283,7 @@ pub struct PixyTree {
 
     /// Horizontal spread (0 = natural angle, 1 = flat horizontal canopy)
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.0)]
+    #[init(val = 0.5)]
     branch_flatness: f32,
 
     /// Angle variation with height (-1 = droop at top, +1 = reach upward at top)
@@ -298,7 +298,7 @@ pub struct PixyTree {
 
     /// Multi-segment branch resolution: segments per unit length (0 = legacy single-segment)
     #[export(range = (0.0, 10.0, 0.5))]
-    #[init(val = 0.0)]
+    #[init(val = 3.0)]
     branch_resolution: f32,
 
     /// Length multiplier per recursion level
@@ -373,7 +373,7 @@ pub struct PixyTree {
     // ═══════════════════════════════════════════
     /// Chance for branch to terminate early (0 = none, 0.5 = half break)
     #[export(range = (0.0, 0.5, 0.05))]
-    #[init(val = 0.0)]
+    #[init(val = 0.01)]
     break_chance: f32,
 
     /// Issue B: Skip branches that would intersect existing branches
@@ -494,7 +494,7 @@ pub struct PixyTree {
 
     /// Minimum branch radius (prevents branches from disappearing)
     #[export(range = (0.01, 0.2, 0.01))]
-    #[init(val = 0.02)]
+    #[init(val = 0.01)]
     pipe_radius_min: f32,
 
     /// Constant growth: additive radius proportional to branch length
@@ -761,7 +761,7 @@ pub struct PixyTree {
 
     /// Vigor below which branches are pruned
     #[export(range = (0.0, 1.0, 0.05))]
-    #[init(val = 0.1)]
+    #[init(val = 0.2)]
     cut_threshold: f32,
 
     /// Vigor above which branches bifurcate
@@ -806,7 +806,7 @@ pub struct PixyTree {
 
     /// Growth direction randomness
     #[export(range = (0.0, 0.5, 0.05))]
-    #[init(val = 0.2)]
+    #[init(val = 0.1)]
     growth_randomness: f32,
 
     /// Enable flowering at low-vigor tips
@@ -816,7 +816,7 @@ pub struct PixyTree {
 
     /// Vigor threshold for flower conversion
     #[export(range = (0.0, 0.5, 0.05))]
-    #[init(val = 0.15)]
+    #[init(val = 0.5)]
     flower_threshold: f32,
 
     /// Enable dynamic cut threshold adaptation (auto-balances branch count)
@@ -1112,8 +1112,8 @@ impl PixyTree {
     /// Called before applying a preset to ensure clean state
     fn reset_to_defaults(&mut self) {
         // Trunk
-        self.trunk_height = 5.0;
-        self.trunk_radius = 0.5;
+        self.trunk_height = 10.0;
+        self.trunk_radius = 0.3;
         self.radial_segments = 8;
         self.height_segments = 4;
 
@@ -1142,7 +1142,7 @@ impl PixyTree {
         self.branch_angle_curve_end = 1.0;
         self.branch_angle_curve_power = 1.0;
         self.branch_angle_variation = 5.0;
-        self.branch_radius_ratio = 0.3;
+        self.branch_radius_ratio = 0.4;
         self.branch_taper = 0.7;
         self.taper_mode = TaperMode::Legacy;
         self.branch_end_radius = 0.05;
@@ -1163,10 +1163,10 @@ impl PixyTree {
         self.branch_radius_curve_power = 1.0;
         self.sub_branch_position_bias = 0.0;
         self.apical_dominance = 0.5;
-        self.branch_flatness = 0.0;
+        self.branch_flatness = 0.5;
         self.branch_angle_curve = 0.0;
         self.crown_angle_variation = 0.0;
-        self.branch_resolution = 0.0;
+        self.branch_resolution = 3.0;
 
         // Twist
         self.trunk_twist = 0.0;
@@ -1177,7 +1177,7 @@ impl PixyTree {
         self.stiffness = 0.5;
 
         // Branch Randomness
-        self.break_chance = 0.0;
+        self.break_chance = 0.01;
         self.branch_collision_avoidance = false;
 
         // Splitting
@@ -1210,7 +1210,7 @@ impl PixyTree {
         // Pipe Radius Model
         self.pipe_radius_enabled = false;
         self.pipe_radius_exponent = 2.0;
-        self.pipe_radius_min = 0.02;
+        self.pipe_radius_min = 0.01;
         self.pipe_radius_constant_growth = 0.0;
 
         // Branch Collar
@@ -1269,8 +1269,8 @@ impl PixyTree {
         self.growth_preset = GrowthPreset::Custom;
         self.growth_iterations = 5;
         self.preview_iteration = -1;
-        self.grow_threshold = 0.3;
-        self.cut_threshold = 0.1;
+        self.grow_threshold = 0.5;
+        self.cut_threshold = 0.2;
         self.split_threshold = 0.7;
         self.lateral_enabled = true;
         self.lateral_start = 0.1;
@@ -1279,9 +1279,9 @@ impl PixyTree {
         self.lateral_activation = 0.4;
         self.lateral_angle = 45.0;
         self.growth_gravitropism = 0.1;
-        self.growth_randomness = 0.2;
+        self.growth_randomness = 0.1;
         self.flowering_enabled = false;
-        self.flower_threshold = 0.15;
+        self.flower_threshold = 0.5;
         self.dynamic_cut_threshold = true;
         self.growth_extension_taper = 0.95;
         self.growth_split_taper = 0.9;
@@ -2668,7 +2668,8 @@ impl PixyTree {
         let config = self.create_growth_config();
 
         // 2. Create initial trunk structure
-        let trunk = create_trunk_structure(&config);
+        // G51: Pass lateral_enabled to suppress trunk tip growth when laterals dominate
+        let trunk = create_trunk_structure(&config, self.lateral_enabled);
 
         // 3. Simulate growth
         let grown_tree = simulate_growth(trunk, &config);
