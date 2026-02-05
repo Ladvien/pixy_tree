@@ -1267,20 +1267,24 @@ pub fn apply_pipe_radius_model(
 }
 
 /// Generate a collar mesh that smoothly connects trunk surface to branch base.
-/// This creates a tapered cone-like transition that bridges the gap between
-/// the trunk and branch, eliminating visible seams.
+/// This creates a tapered transition that bridges the gap between
+/// the trunk surface and branch, eliminating visible seams.
 ///
 /// # Arguments
-/// * `branch_start` - Branch attachment point on trunk surface
+/// * `branch_start` - Branch attachment point (where branch mesh begins)
 /// * `branch_direction` - Branch growth direction (normalized)
+/// * `trunk_center` - Center of trunk at branch height (accounting for wobble)
 /// * `trunk_radius` - Trunk radius at this height
+/// * `trunk_direction` - Trunk axis direction (typically Vector3::UP)
 /// * `branch_radius` - Branch base radius
-/// * `collar_length` - How far collar extends along branch direction
+/// * `collar_length` - How far collar extends (controls transition length)
 /// * `radial_segments` - Segments around circumference
 pub fn generate_branch_collar(
     branch_start: Vector3,
     branch_direction: Vector3,
-    _trunk_radius: f32,
+    trunk_center: Vector3,
+    trunk_radius: f32,
+    trunk_direction: Vector3,
     branch_radius: f32,
     collar_length: f32,
     radial_segments: i32,
@@ -1288,41 +1292,65 @@ pub fn generate_branch_collar(
     let mut mesh = MeshData::new();
 
     let segments = radial_segments.max(3) as usize;
-    let rings = 3usize; // Base ring on trunk, middle blend, end at branch start
+    let rings = 3usize; // Ring 0 on trunk surface, Ring 1 transition, Ring 2 at branch start
 
-    // Build rotation basis from branch direction
-    let right = get_perpendicular(branch_direction);
-    let forward = branch_direction.cross(right);
+    // === Ring 0: On trunk surface ===
+    // Radial direction from trunk center to branch attachment point
+    let radial = (branch_start - trunk_center)
+        .try_normalized()
+        .unwrap_or(Vector3::new(1.0, 0.0, 0.0));
 
-    // Calculate the collar's starting position (slightly embedded in trunk)
-    // and ending position (at branch start)
-    let collar_start = branch_start - branch_direction * collar_length * 0.1;
-    let collar_end = branch_start + branch_direction * collar_length * 0.5;
+    // Position ring 0 on trunk surface
+    let ring0_center = trunk_center + radial * trunk_radius;
 
-    // The collar starts with a wider "flare" at the trunk and tapers to branch radius
-    // Start radius is larger to blend with trunk surface
-    let start_radius = branch_radius * 1.3;
-    let end_radius = branch_radius;
+    // Ring 0 radius scales with branch but bounded by trunk proportion
+    let ring0_radius = (branch_radius * 1.2).min(trunk_radius * 0.35);
+
+    // Ring 0 basis: perpendicular to radial, one axis aligned with trunk_direction
+    let ring0_right = trunk_direction
+        .cross(radial)
+        .try_normalized()
+        .unwrap_or_else(|| get_perpendicular(radial));
+    let ring0_forward = radial.cross(ring0_right);
+
+    // === Ring 2: At branch start (MUST match branch mesh first ring exactly) ===
+    let ring2_center = branch_start;
+    let ring2_radius = branch_radius;
+
+    // Use SAME basis construction as generate_branch_mesh_with_resolution
+    let ring2_right = get_perpendicular(branch_direction);
+    let ring2_forward = branch_direction.cross(ring2_right);
+
+    // === Ring 1: Interpolated transition ===
+    let ring1_center = ring0_center.lerp(ring2_center, 0.5);
+    let ring1_radius = lerp(ring0_radius, ring2_radius, 0.5);
+
+    // Interpolate direction and rebuild basis
+    let ring1_dir = radial
+        .lerp(branch_direction, 0.5)
+        .try_normalized()
+        .unwrap_or(branch_direction);
+    let ring1_right = get_perpendicular(ring1_dir);
+    let ring1_forward = ring1_dir.cross(ring1_right);
+
+    // Pre-compute ring data
+    let ring_centers = [ring0_center, ring1_center, ring2_center];
+    let ring_radii = [ring0_radius, ring1_radius, ring2_radius];
+    let ring_rights = [ring0_right, ring1_right, ring2_right];
+    let ring_forwards = [ring0_forward, ring1_forward, ring2_forward];
+    let ring_normals_outward = [radial, ring1_dir, branch_direction];
 
     // Smooth weight: thick short collars get more smoothing (junction areas)
-    // smooth_amount = min(1.0, radius / collar_length) from original ManifoldMesher
     let smooth_amount = (branch_radius / collar_length.max(0.001)).min(1.0);
 
     // Generate rings of vertices
     for ring in 0..rings {
         let t = ring as f32 / (rings - 1) as f32;
-
-        // Position along collar (lerp from start to end)
-        let pos = Vector3::new(
-            lerp(collar_start.x, collar_end.x, t),
-            lerp(collar_start.y, collar_end.y, t),
-            lerp(collar_start.z, collar_end.z, t),
-        );
-
-        // Radius tapers from start_radius to end_radius
-        // Use smooth interpolation for natural look
-        let smooth_t = t * t * (3.0 - 2.0 * t); // Smoothstep
-        let radius = lerp(start_radius, end_radius, smooth_t);
+        let pos = ring_centers[ring];
+        let radius = ring_radii[ring];
+        let right = ring_rights[ring];
+        let forward = ring_forwards[ring];
+        let outward_dir = ring_normals_outward[ring];
 
         // Weight is strongest at the base (trunk junction) and decreases toward tip
         let ring_weight = smooth_amount * (1.0 - t * 0.5);
@@ -1335,12 +1363,19 @@ pub fn generate_branch_collar(
             let local_x = angle.cos() * radius;
             let local_z = angle.sin() * radius;
 
-            // Transform to world space using our basis
+            // Transform to world space using this ring's basis
             let offset = right * local_x + forward * local_z;
             let vertex = pos + offset;
 
-            // Normal points outward in the local frame
-            let normal = (right * angle.cos() + forward * angle.sin()).normalized();
+            // Normal blends between radial (outward from trunk) at ring 0
+            // and perpendicular to branch at ring 2
+            let local_normal = (right * angle.cos() + forward * angle.sin()).normalized();
+            // Blend outward direction for ring 0 to give "bulge" effect
+            let normal = if ring == 0 {
+                (local_normal * 0.7 + outward_dir * 0.3).normalized()
+            } else {
+                local_normal
+            };
 
             mesh.vertices.push(vertex);
             mesh.normals.push(normal);

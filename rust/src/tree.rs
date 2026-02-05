@@ -1773,10 +1773,15 @@ impl PixyTree {
                         let tip_r = self.trunk_radius * self.trunk_taper;
                         let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
 
+                        // Compute trunk center at branch height (accounts for wobble)
+                        let trunk_center = self.trunk_center_at_height(branch.start.y);
+
                         let collar = generate_branch_collar(
                             branch.start,
                             branch.direction,
+                            trunk_center,
                             trunk_r_at_height,
+                            Vector3::UP,
                             branch.base_radius,
                             branch.base_radius * self.branch_collar_length,
                             self.radial_segments / 2,
@@ -2127,6 +2132,35 @@ impl PixyTree {
         }
     }
 
+    /// Compute trunk center at a given height, accounting for wobble/randomness.
+    /// Used for both trunk mesh generation and collar positioning.
+    fn trunk_center_at_height(&self, height: f32) -> Vector3 {
+        let trunk_height = self.trunk_height.max(0.001);
+        let t = height / trunk_height;
+        let seed_f = self.seed as f32;
+
+        let wobble_x = if self.trunk_randomness > 0.0 {
+            (t * std::f32::consts::PI + seed_f * 0.1).sin()
+                * self.trunk_randomness
+                * t
+                * trunk_height
+                * 0.3
+        } else {
+            0.0
+        };
+        let wobble_z = if self.trunk_randomness > 0.0 {
+            (t * std::f32::consts::E + seed_f * 0.2).cos()
+                * self.trunk_randomness
+                * t
+                * trunk_height
+                * 0.3
+        } else {
+            0.0
+        };
+
+        Vector3::new(wobble_x, height, wobble_z)
+    }
+
     fn create_trunk_mesh_data(&self) -> MeshData {
         let mut mesh = MeshData::new();
 
@@ -2139,11 +2173,6 @@ impl PixyTree {
 
         // Helper for lerp
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-
-        // Seed-based phase offsets for deterministic wobble
-        let seed_f = self.seed as f32;
-        let phase_x = seed_f * 0.1;
-        let phase_z = seed_f * 0.2;
 
         // Root flare settings
         let root_height = self.root_flare_height * self.trunk_height;
@@ -2160,26 +2189,10 @@ impl PixyTree {
             let taper_factor = t.powf(self.trunk_taper_curve);
             let radius = lerp(base_radius, tip_radius, taper_factor);
 
-            // Apply trunk randomness (cumulative wobble with height)
-            // Wobble increases toward top (multiplied by t) for natural lean
-            let wobble_x = if self.trunk_randomness > 0.0 {
-                (t * std::f32::consts::PI + phase_x).sin()
-                    * self.trunk_randomness
-                    * t
-                    * self.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
-            let wobble_z = if self.trunk_randomness > 0.0 {
-                (t * std::f32::consts::E + phase_z).cos()
-                    * self.trunk_randomness
-                    * t
-                    * self.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
+            // Use shared helper for trunk wobble (consistent with collar positioning)
+            let trunk_center = self.trunk_center_at_height(y);
+            let wobble_x = trunk_center.x;
+            let wobble_z = trunk_center.z;
 
             // Apply trunk twist rotation based on height
             let twist_angle = t * self.trunk_twist.to_radians();
@@ -2297,27 +2310,13 @@ impl PixyTree {
             let top_cos_t = top_twist_angle.cos();
             let top_sin_t = top_twist_angle.sin();
 
-            // Calculate top wobble (t=1.0)
-            let top_wobble_x = if self.trunk_randomness > 0.0 {
-                (std::f32::consts::PI + seed_f * 0.1).sin()
-                    * self.trunk_randomness
-                    * self.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
-            let top_wobble_z = if self.trunk_randomness > 0.0 {
-                (std::f32::consts::E + seed_f * 0.2).cos()
-                    * self.trunk_randomness
-                    * self.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
+            // Use shared helper for top wobble (consistent with collar positioning)
+            let top_center = self.trunk_center_at_height(self.trunk_height);
+            let top_wobble_x = top_center.x;
+            let top_wobble_z = top_center.z;
 
             let top_center_idx = mesh.vertices.len() as i32;
-            mesh.vertices
-                .push(Vector3::new(top_wobble_x, self.trunk_height, top_wobble_z));
+            mesh.vertices.push(top_center);
             mesh.normals.push(Vector3::new(0.0, 1.0, 0.0));
             mesh.uvs.push(Vector2::new(0.5, 0.5));
 
@@ -2618,10 +2617,15 @@ impl PixyTree {
                     let tip_r = self.trunk_radius * self.trunk_taper;
                     let trunk_r_at_height = base_r + (tip_r - base_r) * taper_factor;
 
+                    // Compute trunk center at branch height (accounts for wobble)
+                    let trunk_center = self.trunk_center_at_height(branch.start.y);
+
                     let collar = generate_branch_collar(
                         branch.start,
                         branch.direction,
+                        trunk_center,
                         trunk_r_at_height,
+                        Vector3::UP,
                         branch.base_radius,
                         branch.base_radius * self.branch_collar_length,
                         self.radial_segments / 2,
