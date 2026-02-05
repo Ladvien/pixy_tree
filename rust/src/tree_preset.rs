@@ -26,6 +26,324 @@ pub enum TreePreset {
     JapaneseMaple = 13, // Ornamental, layered
     DeadTree = 14,      // Fantasy/horror, no foliage
     Redwood = 15,       // Massive scale
+    Elm = 16,           // Vase-shaped crown
+    Fir = 17,           // Symmetric pyramid
+    Cedar = 18,         // Flat sprays, tiered
+    JoshuaTree = 19,    // Chaotic dichotomous
+    Olive = 20,         // Gnarled twisted trunk
+    // Phase 2: New species
+    CherryBlossom = 21, // Sakura - graceful ornamental
+    Acacia = 22,        // Umbrella tree - flat-topped African
+    Beech = 23,         // Dense spherical crown
+    Ginkgo = 24,        // Fan-shaped leaves, angular branches
+    WeepingCherry = 25, // Cascade/waterfall effect
+    // Phase 3: Fantasy presets
+    WorldTree = 26,     // Yggdrasil-scale massive landmark
+    CrystalTree = 27,   // Faceted geometric crystal formations
+    CorruptedTree = 28, // Twisted, diseased dark appearance
+    GlowingTree = 29,   // Magical tree with glowing foliage
+}
+
+/// Style modifiers for different game art styles
+#[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
+#[godot(via = i64)]
+pub enum StyleModifier {
+    #[default]
+    None = 0,
+    /// Thicker trunk, smoother surfaces, simplified silhouette
+    StylizedCartoon = 1,
+    /// Reduced mesh segments for performance (desktop low-poly)
+    LowPoly = 2,
+    /// Twisted, broken branches, spooky appearance
+    Horror = 3,
+    /// Higher mesh detail, more natural variation
+    Realistic = 4,
+    /// Extreme optimization for mobile (300-1500 triangles target)
+    MobileOptimized = 5,
+    /// AAA-quality realistic detail (high poly)
+    AAARealistic = 6,
+}
+
+/// Scale modifiers for tree age/size variants
+#[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
+#[godot(via = i64)]
+pub enum ScaleModifier {
+    #[default]
+    Mature = 0,
+    /// Young tree: small, sparse branches
+    Sapling = 1,
+    /// Old tree: large, thick, weathered
+    Ancient = 2,
+    /// Dead tree: no foliage, broken branches
+    Dead = 3,
+}
+
+/// Seasonal appearance modifiers
+#[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
+#[godot(via = i64)]
+pub enum SeasonModifier {
+    #[default]
+    None = 0,
+    /// 65% foliage, light green, small leaves
+    Spring = 1,
+    /// 100% foliage (baseline)
+    Summer = 2,
+    /// Gradient colors (orange/red/yellow), 70% density
+    Autumn = 3,
+    /// No foliage for deciduous, snow on evergreen
+    Winter = 4,
+}
+
+/// Values applied by style modifiers
+#[derive(Clone, Debug)]
+pub struct StyleModifierValues {
+    pub trunk_radius_mult: f32,
+    pub randomness_add: f32,
+    pub twist_add: f32,
+    pub radial_segments: Option<i32>,
+    pub break_chance_add: f32,
+    /// Multiplier for branch_recursion (0.5 = half the recursion levels)
+    pub recursion_mult: f32,
+    /// Multiplier for foliage density
+    pub foliage_density_mult: f32,
+    /// Smoothing iterations override (-1 = no change)
+    pub smooth_iterations: i32,
+}
+
+impl StyleModifier {
+    /// Get the modifier values, or None for None modifier
+    pub fn get_values(&self) -> Option<StyleModifierValues> {
+        match self {
+            StyleModifier::None => None,
+            StyleModifier::StylizedCartoon => Some(StyleModifierValues::stylized_cartoon()),
+            StyleModifier::LowPoly => Some(StyleModifierValues::low_poly()),
+            StyleModifier::Horror => Some(StyleModifierValues::horror()),
+            StyleModifier::Realistic => Some(StyleModifierValues::realistic()),
+            StyleModifier::MobileOptimized => Some(StyleModifierValues::mobile_optimized()),
+            StyleModifier::AAARealistic => Some(StyleModifierValues::aaa_realistic()),
+        }
+    }
+}
+
+impl StyleModifierValues {
+    /// Stylized Cartoon: Thicker trunk, smoother, fewer segments
+    pub fn stylized_cartoon() -> Self {
+        Self {
+            trunk_radius_mult: 1.15,
+            randomness_add: -0.1,
+            twist_add: 0.0,
+            radial_segments: Some(6),
+            break_chance_add: 0.0,
+            recursion_mult: 1.0,
+            foliage_density_mult: 1.0,
+            smooth_iterations: -1, // No change
+        }
+    }
+
+    /// Low Poly: Reduced mesh complexity (desktop low-poly aesthetic)
+    pub fn low_poly() -> Self {
+        Self {
+            trunk_radius_mult: 1.0,
+            randomness_add: 0.0,
+            twist_add: 0.0,
+            radial_segments: Some(5), // Slightly more than 4 for better silhouette
+            break_chance_add: 0.0,
+            recursion_mult: 0.75,      // Reduce recursion
+            foliage_density_mult: 0.8, // Slightly less foliage
+            smooth_iterations: 0,      // No smoothing
+        }
+    }
+
+    /// Horror: Twisted, broken, spooky
+    pub fn horror() -> Self {
+        Self {
+            trunk_radius_mult: 1.0,
+            randomness_add: 0.25,
+            twist_add: 25.0,
+            radial_segments: None, // Keep original
+            break_chance_add: 0.2,
+            recursion_mult: 1.0,
+            foliage_density_mult: 0.5, // Sparse, dying foliage
+            smooth_iterations: -1,
+        }
+    }
+
+    /// Realistic: Higher detail
+    pub fn realistic() -> Self {
+        Self {
+            trunk_radius_mult: 1.0,
+            randomness_add: 0.05,
+            twist_add: 0.0,
+            radial_segments: Some(12),
+            break_chance_add: 0.0,
+            recursion_mult: 1.0,
+            foliage_density_mult: 1.2, // Denser foliage
+            smooth_iterations: 2,      // Some smoothing
+        }
+    }
+
+    /// Mobile Optimized: Extreme optimization for mobile (300-1500 triangles)
+    pub fn mobile_optimized() -> Self {
+        Self {
+            trunk_radius_mult: 1.0,
+            randomness_add: -0.05, // Less randomness = fewer vertices
+            twist_add: 0.0,
+            radial_segments: Some(4), // Minimum segments
+            break_chance_add: 0.0,
+            recursion_mult: 0.5,       // Half recursion
+            foliage_density_mult: 0.5, // Half foliage
+            smooth_iterations: 0,      // No smoothing
+        }
+    }
+
+    /// AAA Realistic: Maximum detail for high-end platforms
+    pub fn aaa_realistic() -> Self {
+        Self {
+            trunk_radius_mult: 1.0,
+            randomness_add: 0.08, // Natural variation
+            twist_add: 0.0,
+            radial_segments: Some(16), // High segment count
+            break_chance_add: 0.02,    // Occasional realistic breakage
+            recursion_mult: 1.25,      // More recursion
+            foliage_density_mult: 1.5, // Dense canopy
+            smooth_iterations: 3,      // Good smoothing
+        }
+    }
+}
+
+/// Values applied by scale modifiers
+#[derive(Clone, Debug)]
+pub struct ScaleModifierValues {
+    pub height_mult: f32,
+    pub radius_mult: f32,
+    pub density_mult: f32,
+    pub randomness_add: f32,
+    pub break_chance_add: f32,
+    pub foliage_enabled: bool,
+}
+
+impl ScaleModifier {
+    /// Get the modifier values, or None for Mature (baseline)
+    pub fn get_values(&self) -> Option<ScaleModifierValues> {
+        match self {
+            ScaleModifier::Mature => None,
+            ScaleModifier::Sapling => Some(ScaleModifierValues::sapling()),
+            ScaleModifier::Ancient => Some(ScaleModifierValues::ancient()),
+            ScaleModifier::Dead => Some(ScaleModifierValues::dead()),
+        }
+    }
+}
+
+impl ScaleModifierValues {
+    /// Sapling: Small, sparse
+    pub fn sapling() -> Self {
+        Self {
+            height_mult: 0.2,
+            radius_mult: 0.1,
+            density_mult: 0.4,
+            randomness_add: 0.0,
+            break_chance_add: 0.0,
+            foliage_enabled: true,
+        }
+    }
+
+    /// Ancient: Large, weathered
+    pub fn ancient() -> Self {
+        Self {
+            height_mult: 1.25,
+            radius_mult: 1.8,
+            density_mult: 1.0,
+            randomness_add: 0.1,
+            break_chance_add: 0.08,
+            foliage_enabled: true,
+        }
+    }
+
+    /// Dead: No foliage, broken
+    pub fn dead() -> Self {
+        Self {
+            height_mult: 0.9,
+            radius_mult: 1.0,
+            density_mult: 0.6,
+            randomness_add: 0.15,
+            break_chance_add: 0.25,
+            foliage_enabled: false,
+        }
+    }
+}
+
+/// Values applied by season modifiers
+#[derive(Clone, Debug)]
+pub struct SeasonModifierValues {
+    /// Foliage density multiplier (1.0 = normal)
+    pub foliage_density_mult: f32,
+    /// Override foliage color (None = use preset color)
+    pub foliage_color: Option<Color>,
+    /// Leaf size multiplier
+    pub leaf_scale_mult: f32,
+    /// Enable snow on branches (for evergreen winter)
+    pub snow_enabled: bool,
+    /// Disable foliage entirely (deciduous winter)
+    pub foliage_disabled: bool,
+}
+
+impl SeasonModifier {
+    /// Get the modifier values, or None for None modifier
+    pub fn get_values(&self) -> Option<SeasonModifierValues> {
+        match self {
+            SeasonModifier::None => None,
+            SeasonModifier::Spring => Some(SeasonModifierValues::spring()),
+            SeasonModifier::Summer => Some(SeasonModifierValues::summer()),
+            SeasonModifier::Autumn => Some(SeasonModifierValues::autumn()),
+            SeasonModifier::Winter => Some(SeasonModifierValues::winter()),
+        }
+    }
+}
+
+impl SeasonModifierValues {
+    /// Spring: 65% foliage, light green, smaller leaves
+    pub fn spring() -> Self {
+        Self {
+            foliage_density_mult: 0.65,
+            foliage_color: Some(Color::from_rgb(0.5, 0.75, 0.35)), // Light spring green
+            leaf_scale_mult: 0.75,                                 // Smaller new leaves
+            snow_enabled: false,
+            foliage_disabled: false,
+        }
+    }
+
+    /// Summer: 100% foliage (baseline)
+    pub fn summer() -> Self {
+        Self {
+            foliage_density_mult: 1.0,
+            foliage_color: None, // Use preset color
+            leaf_scale_mult: 1.0,
+            snow_enabled: false,
+            foliage_disabled: false,
+        }
+    }
+
+    /// Autumn: 70% density, warm colors
+    pub fn autumn() -> Self {
+        Self {
+            foliage_density_mult: 0.7,
+            foliage_color: Some(Color::from_rgb(0.85, 0.5, 0.2)), // Warm orange
+            leaf_scale_mult: 1.0,
+            snow_enabled: false,
+            foliage_disabled: false,
+        }
+    }
+
+    /// Winter: No foliage for deciduous, snow on evergreen
+    pub fn winter() -> Self {
+        Self {
+            foliage_density_mult: 0.0,
+            foliage_color: None,
+            leaf_scale_mult: 1.0,
+            snow_enabled: true,
+            foliage_disabled: true, // Deciduous trees have no foliage
+        }
+    }
 }
 
 /// Pre-configured growth presets for L-system growth simulation
@@ -369,6 +687,22 @@ impl TreePreset {
             TreePreset::JapaneseMaple => Some(TreePresetValues::japanese_maple()),
             TreePreset::DeadTree => Some(TreePresetValues::dead_tree()),
             TreePreset::Redwood => Some(TreePresetValues::redwood()),
+            TreePreset::Elm => Some(TreePresetValues::elm()),
+            TreePreset::Fir => Some(TreePresetValues::fir()),
+            TreePreset::Cedar => Some(TreePresetValues::cedar()),
+            TreePreset::JoshuaTree => Some(TreePresetValues::joshua_tree()),
+            TreePreset::Olive => Some(TreePresetValues::olive()),
+            // Phase 2: New species
+            TreePreset::CherryBlossom => Some(TreePresetValues::cherry_blossom()),
+            TreePreset::Acacia => Some(TreePresetValues::acacia()),
+            TreePreset::Beech => Some(TreePresetValues::beech()),
+            TreePreset::Ginkgo => Some(TreePresetValues::ginkgo()),
+            TreePreset::WeepingCherry => Some(TreePresetValues::weeping_cherry()),
+            // Phase 3: Fantasy presets
+            TreePreset::WorldTree => Some(TreePresetValues::world_tree()),
+            TreePreset::CrystalTree => Some(TreePresetValues::crystal_tree()),
+            TreePreset::CorruptedTree => Some(TreePresetValues::corrupted_tree()),
+            TreePreset::GlowingTree => Some(TreePresetValues::glowing_tree()),
         }
     }
 }
@@ -394,16 +728,16 @@ impl TreePresetValues {
             leader_has_branches: true,
             branch_start: 0.35,
             branch_end: 0.85,
-            branch_density: 2.0, // Updated: was 1.2, research suggests 2.5
-            branch_length: 0.65, // Updated: was 0.5, research suggests 0.8
+            branch_density: 2.5, // Research suggests 2.5 for dense oak crown
+            branch_length: 0.8,  // Research suggests 0.8 for spreading branches
             branch_angle: 55.0,
-            branch_radius_ratio: 0.35,
+            branch_radius_ratio: 0.45, // Research suggests 0.45 for thick oak branches
             branch_taper: 0.7,
             phyllotaxis_angle: 137.5,
             branch_randomness: 0.25,
             up_attraction: 0.15,
             branch_recursion: 2,
-            sub_branch_count: 3,
+            sub_branch_count: 4, // Research suggests 4 for oak
             sub_branch_scale: 0.55,
             branch_length_variation: 0.2,
             sub_branch_position_bias: 0.2,
@@ -413,11 +747,11 @@ impl TreePresetValues {
             crown_angle_variation: -0.2, // Lower branches spread horizontally
             trunk_twist: 15.0,
             branch_twist: 10.0,
-            gravity_strength: 0.3, // Updated: was 0.1, research suggests 0.35
+            gravity_strength: 0.35, // Updated: was 0.3, research suggests 0.35
             stiffness: 0.6,
             break_chance: 0.05,
             split_enabled: true,
-            split_probability: 0.3,
+            split_probability: 0.55, // Updated from 0.3 - research suggests 0.65, compromise for game feel
             split_angle: 30.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
@@ -455,7 +789,7 @@ impl TreePresetValues {
             leader_length: 0.2,
             leader_taper: 0.05,
             leader_has_branches: false,
-            branch_start: 0.25, // Updated: was 0.15, research suggests 0.35-0.5
+            branch_start: 0.35, // Updated from 0.25 - research suggests lower branch shedding
             branch_end: 0.95,
             branch_density: 1.8,
             branch_length: 0.45,
@@ -527,10 +861,10 @@ impl TreePresetValues {
             branch_taper: 0.85,
             phyllotaxis_angle: 137.5,
             branch_randomness: 0.3,
-            up_attraction: -0.75, // Updated: was -0.5, research suggests -0.8
-            branch_recursion: 3,  // Updated: was 2, research suggests 4
+            up_attraction: -0.8, // Updated from -0.75 - research suggests -0.8
+            branch_recursion: 4, // Research suggests 4 for willow cascades
             sub_branch_count: 3,
-            sub_branch_scale: 0.7, // Updated: was 0.6, research suggests 0.75
+            sub_branch_scale: 0.75, // Research suggests 0.75 for willow
             branch_length_variation: 0.25,
             sub_branch_position_bias: 0.3,
             apical_dominance: 0.2,
@@ -539,7 +873,7 @@ impl TreePresetValues {
             crown_angle_variation: -0.3, // Strong horizontal spread at bottom
             trunk_twist: 10.0,
             branch_twist: 15.0,
-            gravity_strength: 0.5, // Reduced from 0.7 - real willows rely on flexibility (stiffness 0.2), not extreme gravity
+            gravity_strength: 0.9, // Research suggests 0.9 for weeping effect
             stiffness: 0.2,
             break_chance: 0.0,
             split_enabled: false,
@@ -602,7 +936,7 @@ impl TreePresetValues {
             crown_angle_variation: 0.1, // Slight vertical bias at bottom
             trunk_twist: 5.0,
             branch_twist: 8.0,
-            gravity_strength: 0.1, // Updated: birch branches reach upward, minimal droop
+            gravity_strength: 0.25, // Updated from 0.1 - research suggests 0.4 for pendulous tips
             stiffness: 0.7,
             break_chance: 0.1,
             split_enabled: true,
@@ -709,9 +1043,9 @@ impl TreePresetValues {
             leader_has_branches: false,
             branch_start: 0.1,
             branch_end: 0.95,
-            branch_density: 3.0, // Updated: was 2.0, research suggests 3.5-4.5
+            branch_density: 4.0, // Research suggests 3.5-4.5
             branch_length: 0.25,
-            branch_angle: 18.0, // Updated: was 25.0, research suggests 12-15
+            branch_angle: 12.0, // Research suggests 12-15 for tight columnar form
             branch_radius_ratio: 0.28, // Increased from 0.2 - conifer needs structural branches
             branch_taper: 0.7,
             phyllotaxis_angle: 137.5,
@@ -835,7 +1169,7 @@ impl TreePresetValues {
             leader_has_branches: true,
             branch_start: 0.35,
             branch_end: 0.9,
-            branch_density: 1.8,
+            branch_density: 2.2, // Updated from 1.8 - sugar maples are dense
             branch_length: 0.55,
             branch_angle: 52.0,
             branch_radius_ratio: 0.32,
@@ -858,7 +1192,7 @@ impl TreePresetValues {
             stiffness: 0.55,
             break_chance: 0.05,
             split_enabled: true,
-            split_probability: 0.25,
+            split_probability: 0.45, // Updated from 0.25 - research suggests 0.7
             split_angle: 28.0,
             split_position: 0.5,
             split_radius_threshold: 0.1,
@@ -896,11 +1230,11 @@ impl TreePresetValues {
             leader_length: 0.25,
             leader_taper: 0.03,
             leader_has_branches: false,
-            branch_start: 0.12, // Nearly to ground
+            branch_start: 0.15, // Research suggests 0.15, slight ground clearance
             branch_end: 0.95,
             branch_density: 2.2,
             branch_length: 0.5,
-            branch_angle: 78.0, // Near horizontal
+            branch_angle: 85.0, // Updated from 78.0 - research suggests 85-95°, near horizontal
             branch_radius_ratio: 0.22,
             branch_taper: 0.82,
             phyllotaxis_angle: 72.0, // Whorled branching
@@ -1318,6 +1652,896 @@ impl TreePresetValues {
             growth: Some(GrowthPresetValues::structured()),
         }
     }
+
+    /// Elm: Vase-shaped crown with arching branches
+    pub fn elm() -> Self {
+        Self {
+            trunk_height: 12.0,
+            trunk_radius: 0.6,
+            radial_segments: 8,
+            height_segments: 6,
+            trunk_taper: 0.25,
+            trunk_taper_curve: 0.5,
+            trunk_flare: 1.15,
+            trunk_randomness: 0.05,
+            root_flare_count: 4,
+            root_flare_spread: 0.5,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.1,
+            leader_taper: 0.15,
+            leader_has_branches: false,
+            branch_start: 0.3,
+            branch_end: 0.9,
+            branch_density: 2.0,
+            branch_length: 0.55,
+            branch_angle: 45.0,
+            branch_radius_ratio: 0.3,
+            branch_taper: 0.7,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.2,
+            up_attraction: 0.4, // Arches upward and outward
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.2,
+            sub_branch_position_bias: 0.2,
+            apical_dominance: 0.35, // Low - vase-shaped crown
+            branch_flatness: 0.2,
+            branch_angle_curve: -0.6, // Branches arch outward
+            crown_angle_variation: -0.3,
+            trunk_twist: 8.0,
+            branch_twist: 10.0,
+            gravity_strength: 0.2,
+            stiffness: 0.5,
+            break_chance: 0.05,
+            split_enabled: true,
+            split_probability: 0.35,
+            split_angle: 35.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
+            crown_shape: CrownShape::Hemispherical,
+            crown_influence: 0.85,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.38, 0.32, 0.25), // Gray-brown bark
+            foliage_color: Color::from_rgb(0.2, 0.4, 0.15), // Medium green
+            foliage: Some(FoliagePresetValues::elm()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
+
+    /// Fir: Noble/Douglas symmetric pyramid shape
+    pub fn fir() -> Self {
+        Self {
+            trunk_height: 15.0,
+            trunk_radius: 0.5,
+            radial_segments: 8,
+            height_segments: 8,
+            trunk_taper: 0.08,
+            trunk_taper_curve: 0.85,
+            trunk_flare: 1.05,
+            trunk_randomness: 0.0,
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.2,
+            leader_taper: 0.03,
+            leader_has_branches: false,
+            branch_start: 0.15,
+            branch_end: 0.95,
+            branch_density: 2.0,
+            branch_length: 0.45,
+            branch_angle: 85.0, // Near horizontal whorled branches
+            branch_radius_ratio: 0.22,
+            branch_taper: 0.8,
+            phyllotaxis_angle: 72.0, // Whorled branching pattern
+            branch_randomness: 0.08,
+            up_attraction: -0.1,
+            branch_recursion: 1,
+            sub_branch_count: 2,
+            sub_branch_scale: 0.4,
+            branch_length_variation: 0.1,
+            sub_branch_position_bias: 0.0,
+            apical_dominance: 0.85, // Strong central leader
+            branch_flatness: 0.5,   // Horizontal spray effect
+            branch_angle_curve: 0.4,
+            crown_angle_variation: 0.35,
+            trunk_twist: 0.0,
+            branch_twist: 3.0,
+            gravity_strength: 0.05,
+            stiffness: 0.8,
+            break_chance: 0.0,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
+            crown_shape: CrownShape::Conical,
+            crown_influence: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.35, 0.25, 0.18), // Gray-brown bark
+            foliage_color: Color::from_rgb(0.1, 0.28, 0.2), // Blue-green
+            foliage: Some(FoliagePresetValues::fir()),
+            growth: Some(GrowthPresetValues::structured()),
+        }
+    }
+
+    /// Cedar: Tiered flat sprays with horizontal branching
+    pub fn cedar() -> Self {
+        Self {
+            trunk_height: 14.0,
+            trunk_radius: 0.6,
+            radial_segments: 8,
+            height_segments: 7,
+            trunk_taper: 0.15,
+            trunk_taper_curve: 0.6,
+            trunk_flare: 1.5, // Distinctive buttressed base
+            trunk_randomness: 0.03,
+            root_flare_count: 5,
+            root_flare_spread: 0.6,
+            root_flare_height: 0.2,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.15,
+            leader_taper: 0.05,
+            leader_has_branches: false,
+            branch_start: 0.2,
+            branch_end: 0.95,
+            branch_density: 1.8,
+            branch_length: 0.5,
+            branch_angle: 75.0, // Near horizontal
+            branch_radius_ratio: 0.25,
+            branch_taper: 0.75,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.15,
+            up_attraction: -0.15, // Slight droop for flat sprays
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.5,
+            branch_length_variation: 0.15,
+            sub_branch_position_bias: 0.1,
+            apical_dominance: 0.7,
+            branch_flatness: 0.65, // Flat spray effect
+            branch_angle_curve: 0.2,
+            crown_angle_variation: 0.2,
+            trunk_twist: 5.0,
+            branch_twist: 5.0,
+            gravity_strength: 0.1,
+            stiffness: 0.7,
+            break_chance: 0.02,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.6,
+            crown_shape: CrownShape::Cylindrical,
+            crown_influence: 0.8,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.45, 0.3, 0.2), // Red-brown bark
+            foliage_color: Color::from_rgb(0.15, 0.35, 0.22), // Dark green
+            foliage: Some(FoliagePresetValues::cedar()),
+            growth: Some(GrowthPresetValues::structured()),
+        }
+    }
+
+    /// Joshua Tree: Chaotic dichotomous (binary) forking pattern
+    pub fn joshua_tree() -> Self {
+        Self {
+            trunk_height: 4.0,
+            trunk_radius: 0.25,
+            radial_segments: 6,
+            height_segments: 3,
+            trunk_taper: 0.2,
+            trunk_taper_curve: 0.5,
+            trunk_flare: 1.1,
+            trunk_randomness: 0.15,
+            root_flare_count: 2,
+            root_flare_spread: 0.3,
+            root_flare_height: 0.1,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.05,
+            leader_taper: 0.15,
+            leader_has_branches: false,
+            branch_start: 0.5,
+            branch_end: 0.9,
+            branch_density: 0.8,
+            branch_length: 0.35,
+            branch_angle: 50.0,
+            branch_radius_ratio: 0.4,
+            branch_taper: 0.5,
+            phyllotaxis_angle: 180.0, // Binary forking
+            branch_randomness: 0.7,   // High randomness for chaotic look
+            up_attraction: 0.3,
+            branch_recursion: 3,
+            sub_branch_count: 2, // Binary forking
+            sub_branch_scale: 0.75,
+            branch_length_variation: 0.25,
+            sub_branch_position_bias: 0.4,
+            apical_dominance: 0.3, // Low - equal branching
+            branch_flatness: 0.15,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: 0.0,
+            trunk_twist: 20.0,
+            branch_twist: 15.0,
+            gravity_strength: 0.1,
+            stiffness: 0.55,
+            break_chance: 0.08,
+            split_enabled: true,
+            split_probability: 0.85, // High split for dichotomous look
+            split_angle: 45.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.06,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.4,
+            crown_shape: CrownShape::Hemispherical, // Irregular crown
+            crown_influence: 0.5,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.5, 0.45, 0.35), // Light tan bark
+            foliage_color: Color::from_rgb(0.35, 0.45, 0.25), // Yellow-green
+            foliage: Some(FoliagePresetValues::joshua_tree()),
+            growth: Some(GrowthPresetValues::forking()),
+        }
+    }
+
+    /// Olive: Gnarled Mediterranean tree with twisted trunk
+    pub fn olive() -> Self {
+        Self {
+            trunk_height: 4.5,
+            trunk_radius: 0.4,
+            radial_segments: 8,
+            height_segments: 4,
+            trunk_taper: 0.35,
+            trunk_taper_curve: 0.4,
+            trunk_flare: 1.3,
+            trunk_randomness: 0.35, // High randomness for gnarled look
+            root_flare_count: 4,
+            root_flare_spread: 0.6,
+            root_flare_height: 0.2,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.08,
+            leader_taper: 0.15,
+            leader_has_branches: false,
+            branch_start: 0.35,
+            branch_end: 0.85,
+            branch_density: 1.5,
+            branch_length: 0.4,
+            branch_angle: 55.0,
+            branch_radius_ratio: 0.35,
+            branch_taper: 0.65,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.4,
+            up_attraction: 0.1,
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.25,
+            sub_branch_position_bias: 0.2,
+            apical_dominance: 0.35,
+            branch_flatness: 0.3,
+            branch_angle_curve: -0.15,
+            crown_angle_variation: -0.15,
+            trunk_twist: 50.0, // High twist for gnarled appearance
+            branch_twist: 20.0,
+            gravity_strength: 0.2,
+            stiffness: 0.45,
+            break_chance: 0.08,
+            split_enabled: true,
+            split_probability: 0.45,
+            split_angle: 40.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
+            crown_shape: CrownShape::Spherical,
+            crown_influence: 0.7,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.45, 0.4, 0.35), // Gray-brown bark
+            foliage_color: Color::from_rgb(0.4, 0.5, 0.35), // Silver-green
+            foliage: Some(FoliagePresetValues::olive()),
+            growth: Some(GrowthPresetValues::gnarled()),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 2: New Species Presets
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Cherry Blossom (Sakura): Graceful ornamental with distinctive spreading form
+    pub fn cherry_blossom() -> Self {
+        Self {
+            trunk_height: 5.0,
+            trunk_radius: 0.3,
+            radial_segments: 8,
+            height_segments: 4,
+            trunk_taper: 0.35,
+            trunk_taper_curve: 0.45,
+            trunk_flare: 1.15,
+            trunk_randomness: 0.1,
+            root_flare_count: 3,
+            root_flare_spread: 0.4,
+            root_flare_height: 0.12,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.1,
+            leader_taper: 0.12,
+            leader_has_branches: false,
+            branch_start: 0.3,
+            branch_end: 0.9,
+            branch_density: 2.0,
+            branch_length: 0.55,
+            branch_angle: 50.0, // Graceful spreading
+            branch_radius_ratio: 0.28,
+            branch_taper: 0.72,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.25,
+            up_attraction: 0.05,
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.2,
+            sub_branch_position_bias: 0.15,
+            apical_dominance: 0.4,
+            branch_flatness: 0.35, // Horizontal layered appearance
+            branch_angle_curve: -0.2,
+            crown_angle_variation: -0.2,
+            trunk_twist: 12.0,
+            branch_twist: 8.0,
+            gravity_strength: 0.18,
+            stiffness: 0.5,
+            break_chance: 0.03,
+            split_enabled: true,
+            split_probability: 0.25,
+            split_angle: 32.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.4,
+            crown_shape: CrownShape::Spreading,
+            crown_influence: 0.85,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.35, 0.25, 0.2), // Dark bark
+            foliage_color: Color::from_rgb(1.0, 0.85, 0.88), // Pink-white blossoms
+            foliage: Some(FoliagePresetValues::cherry_blossom()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
+
+    /// Acacia (Umbrella Tree): Iconic flat-topped African savanna silhouette
+    pub fn acacia() -> Self {
+        Self {
+            trunk_height: 7.0,
+            trunk_radius: 0.35,
+            radial_segments: 8,
+            height_segments: 5,
+            trunk_taper: 0.25,
+            trunk_taper_curve: 0.6,
+            trunk_flare: 1.2,
+            trunk_randomness: 0.08,
+            root_flare_count: 4,
+            root_flare_spread: 0.5,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.08,
+            leader_taper: 0.15,
+            leader_has_branches: false,
+            branch_start: 0.65, // Branches only in crown
+            branch_end: 0.95,
+            branch_density: 1.8,
+            branch_length: 0.7, // Long horizontal branches
+            branch_angle: 88.0, // Near horizontal (85-95°)
+            branch_radius_ratio: 0.3,
+            branch_taper: 0.65,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.2,
+            up_attraction: -0.1, // Slight droop at tips
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.15,
+            sub_branch_position_bias: 0.2,
+            apical_dominance: 0.1, // Very low - co-dominant flat crown
+            branch_flatness: 0.9,  // Extreme horizontal spread
+            branch_angle_curve: -0.1,
+            crown_angle_variation: -0.1,
+            trunk_twist: 8.0,
+            branch_twist: 5.0,
+            gravity_strength: 0.12,
+            stiffness: 0.55,
+            break_chance: 0.05,
+            split_enabled: true,
+            split_probability: 0.4,
+            split_angle: 35.0,
+            split_position: 0.45,
+            split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
+            crown_shape: CrownShape::Umbrella, // Flat-topped
+            crown_influence: 1.0,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.4, 0.35, 0.28), // Brown-gray bark
+            foliage_color: Color::from_rgb(0.35, 0.5, 0.25), // Olive green
+            foliage: Some(FoliagePresetValues::acacia()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
+
+    /// Beech: Smooth gray bark, dense spherical crown
+    pub fn beech() -> Self {
+        Self {
+            trunk_height: 10.0,
+            trunk_radius: 0.55,
+            radial_segments: 8,
+            height_segments: 5,
+            trunk_taper: 0.28,
+            trunk_taper_curve: 0.55,
+            trunk_flare: 1.18,
+            trunk_randomness: 0.03,
+            root_flare_count: 5,
+            root_flare_spread: 0.55,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.12,
+            leader_taper: 0.1,
+            leader_has_branches: true,
+            branch_start: 0.35,
+            branch_end: 0.9,
+            branch_density: 3.0, // Dense branching
+            branch_length: 0.6,
+            branch_angle: 50.0,
+            branch_radius_ratio: 0.35,
+            branch_taper: 0.7,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.18,
+            up_attraction: 0.15,
+            branch_recursion: 2,
+            sub_branch_count: 4,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.18,
+            sub_branch_position_bias: 0.15,
+            apical_dominance: 0.4,
+            branch_flatness: 0.25,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: -0.15,
+            trunk_twist: 5.0,
+            branch_twist: 6.0,
+            gravity_strength: 0.22,
+            stiffness: 0.6,
+            break_chance: 0.04,
+            split_enabled: true,
+            split_probability: 0.45,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
+            crown_shape: CrownShape::Spherical, // Dense dome
+            crown_influence: 0.95,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.55, 0.53, 0.5), // Smooth gray bark
+            foliage_color: Color::from_rgb(0.2, 0.4, 0.15), // Rich green
+            foliage: Some(FoliagePresetValues::beech()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
+
+    /// Ginkgo: Unique fan-shaped leaves, angular branches
+    pub fn ginkgo() -> Self {
+        Self {
+            trunk_height: 9.0,
+            trunk_radius: 0.45,
+            radial_segments: 8,
+            height_segments: 5,
+            trunk_taper: 0.22,
+            trunk_taper_curve: 0.6,
+            trunk_flare: 1.12,
+            trunk_randomness: 0.05,
+            root_flare_count: 3,
+            root_flare_spread: 0.4,
+            root_flare_height: 0.12,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.15,
+            leader_taper: 0.08,
+            leader_has_branches: true,
+            branch_start: 0.35,
+            branch_end: 0.92,
+            branch_density: 1.8,
+            branch_length: 0.5,
+            branch_angle: 48.0,
+            branch_radius_ratio: 0.28,
+            branch_taper: 0.72,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.38, // High randomness for angular look
+            up_attraction: 0.25,     // Reaches upward
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.52,
+            branch_length_variation: 0.22,
+            sub_branch_position_bias: 0.1,
+            apical_dominance: 0.55,
+            branch_flatness: 0.15,
+            branch_angle_curve: 0.1,
+            crown_angle_variation: 0.1,
+            trunk_twist: 3.0,
+            branch_twist: 5.0,
+            gravity_strength: 0.1,
+            stiffness: 0.7,
+            break_chance: 0.02,
+            split_enabled: true,
+            split_probability: 0.3,
+            split_angle: 35.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.4,
+            crown_shape: CrownShape::Conical, // Young ginkgo - matures to spreading
+            crown_influence: 0.8,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.45, 0.42, 0.38), // Gray-brown bark
+            foliage_color: Color::from_rgb(0.6, 0.7, 0.3),  // Light yellow-green
+            foliage: Some(FoliagePresetValues::ginkgo()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
+
+    /// Weeping Cherry: Cascade/waterfall effect variant
+    pub fn weeping_cherry() -> Self {
+        Self {
+            trunk_height: 4.5,
+            trunk_radius: 0.28,
+            radial_segments: 8,
+            height_segments: 4,
+            trunk_taper: 0.38,
+            trunk_taper_curve: 0.4,
+            trunk_flare: 1.15,
+            trunk_randomness: 0.1,
+            root_flare_count: 3,
+            root_flare_spread: 0.4,
+            root_flare_height: 0.12,
+            trunk_termination: TrunkTermination::FlatCap,
+            leader_length: 0.1,
+            leader_taper: 0.12,
+            leader_has_branches: false,
+            branch_start: 0.35,
+            branch_end: 0.85,
+            branch_density: 2.2,
+            branch_length: 0.65,
+            branch_angle: 55.0,
+            branch_radius_ratio: 0.25,
+            branch_taper: 0.8,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.28,
+            up_attraction: -0.6, // Strong downward cascade
+            branch_recursion: 3,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.68,
+            branch_length_variation: 0.22,
+            sub_branch_position_bias: 0.25,
+            apical_dominance: 0.25,
+            branch_flatness: 0.3,
+            branch_angle_curve: -0.4,
+            crown_angle_variation: -0.3,
+            trunk_twist: 10.0,
+            branch_twist: 12.0,
+            gravity_strength: 0.75, // Strong weeping
+            stiffness: 0.25,        // Flexible branches
+            break_chance: 0.02,
+            split_enabled: false,
+            split_probability: 0.0,
+            split_angle: 30.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.05,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.4,
+            crown_shape: CrownShape::Hemispherical, // Umbrella-like weeping form
+            crown_influence: 0.85,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.38, 0.28, 0.22), // Dark cherry bark
+            foliage_color: Color::from_rgb(1.0, 0.8, 0.85), // Pink blossoms
+            foliage: Some(FoliagePresetValues::weeping_cherry()),
+            growth: Some(GrowthPresetValues::weeping()),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 3: Fantasy/Stylized Presets
+    // ═══════════════════════════════════════════════════════════════
+
+    /// World Tree (Yggdrasil): Massive landmark-scale tree
+    pub fn world_tree() -> Self {
+        Self {
+            trunk_height: 50.0, // Massive scale
+            trunk_radius: 10.0, // Giant trunk
+            radial_segments: 12,
+            height_segments: 12,
+            trunk_taper: 0.15,
+            trunk_taper_curve: 0.6,
+            trunk_flare: 1.8, // Large root flare
+            trunk_randomness: 0.06,
+            root_flare_count: 8, // Many visible roots
+            root_flare_spread: 1.2,
+            root_flare_height: 0.3, // Tall root buttresses
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.08,
+            leader_taper: 0.1,
+            leader_has_branches: true,
+            branch_start: 0.4,
+            branch_end: 0.9,
+            branch_density: 0.5, // Few massive branches
+            branch_length: 0.6,
+            branch_angle: 50.0,
+            branch_radius_ratio: 0.4, // Thick primary branches
+            branch_taper: 0.65,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.2,
+            up_attraction: 0.15,
+            branch_recursion: 3,
+            sub_branch_count: 4,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.2,
+            sub_branch_position_bias: 0.15,
+            apical_dominance: 0.35,
+            branch_flatness: 0.25,
+            branch_angle_curve: -0.1,
+            crown_angle_variation: -0.15,
+            trunk_twist: 20.0,
+            branch_twist: 15.0,
+            gravity_strength: 0.25,
+            stiffness: 0.5,
+            break_chance: 0.03,
+            split_enabled: true,
+            split_probability: 0.5,
+            split_angle: 35.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.15,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 2.0,
+            crown_shape: CrownShape::Spherical,
+            crown_influence: 0.85,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.3, 0.22, 0.15), // Ancient dark bark
+            foliage_color: Color::from_rgb(0.15, 0.35, 0.12), // Deep forest green
+            foliage: Some(FoliagePresetValues::world_tree()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
+
+    /// Crystal Tree: Faceted geometric, no organic curves
+    pub fn crystal_tree() -> Self {
+        Self {
+            trunk_height: 6.0,
+            trunk_radius: 0.4,
+            radial_segments: 6, // Hexagonal facets
+            height_segments: 4,
+            trunk_taper: 0.2,
+            trunk_taper_curve: 0.5, // Linear taper
+            trunk_flare: 1.0,       // No flare
+            trunk_randomness: 0.0,  // No randomness - pure geometry
+            root_flare_count: 0,
+            root_flare_spread: 0.0,
+            root_flare_height: 0.0,
+            trunk_termination: TrunkTermination::PointedTip,
+            leader_length: 0.15,
+            leader_taper: 0.05,
+            leader_has_branches: false,
+            branch_start: 0.25,
+            branch_end: 0.9,
+            branch_density: 1.5,
+            branch_length: 0.45,
+            branch_angle: 60.0, // Geometric 60° angles
+            branch_radius_ratio: 0.25,
+            branch_taper: 0.75,
+            phyllotaxis_angle: 60.0, // 60° intervals for hexagonal pattern
+            branch_randomness: 0.0,  // No randomness
+            up_attraction: 0.3,
+            branch_recursion: 2,
+            sub_branch_count: 2,
+            sub_branch_scale: 0.6,
+            branch_length_variation: 0.0, // Uniform
+            sub_branch_position_bias: 0.0,
+            apical_dominance: 0.6,
+            branch_flatness: 0.0,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: 0.0,
+            trunk_twist: 0.0, // No twist
+            branch_twist: 0.0,
+            gravity_strength: 0.0, // No gravity
+            stiffness: 1.0,        // Perfectly rigid
+            break_chance: 0.0,
+            split_enabled: true,
+            split_probability: 0.4,
+            split_angle: 60.0, // 60° split angle
+            split_position: 0.5,
+            split_radius_threshold: 0.08,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: false,
+            floor_level: 0.0,
+            branch_collar_enabled: false, // No organic collars
+            branch_collar_length: 1.0,
+            crown_shape: CrownShape::Conical,
+            crown_influence: 0.8,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.7, 0.85, 0.95), // Ice blue crystal
+            foliage_color: Color::from_rgb(0.8, 0.9, 1.0), // Lighter crystal tips
+            foliage: None, // No foliage - crystal formations instead
+            growth: Some(GrowthPresetValues::structured()),
+        }
+    }
+
+    /// Corrupted Tree: Twisted, diseased, dark horror appearance
+    pub fn corrupted_tree() -> Self {
+        Self {
+            trunk_height: 6.0,
+            trunk_radius: 0.5,
+            radial_segments: 8,
+            height_segments: 5,
+            trunk_taper: 0.35,
+            trunk_taper_curve: 0.4,
+            trunk_flare: 1.3,
+            trunk_randomness: 0.35, // High randomness for twisted look
+            root_flare_count: 5,
+            root_flare_spread: 0.7,
+            root_flare_height: 0.2,
+            trunk_termination: TrunkTermination::FlatCap, // Broken top
+            leader_length: 0.05,
+            leader_taper: 0.2,
+            leader_has_branches: false,
+            branch_start: 0.2,
+            branch_end: 0.75, // Branches end early (diseased top)
+            branch_density: 1.0,
+            branch_length: 0.45,
+            branch_angle: 55.0,
+            branch_radius_ratio: 0.35,
+            branch_taper: 0.55, // Irregular taper
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.5, // Very irregular
+            up_attraction: -0.15,   // Tends downward
+            branch_recursion: 2,
+            sub_branch_count: 2,
+            sub_branch_scale: 0.5,
+            branch_length_variation: 0.35,
+            sub_branch_position_bias: 0.25,
+            apical_dominance: 0.25,
+            branch_flatness: 0.2,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: 0.0,
+            trunk_twist: 65.0, // Extreme twist
+            branch_twist: 35.0,
+            gravity_strength: 0.35,
+            stiffness: 0.3,
+            break_chance: 0.4, // Many broken branches
+            split_enabled: true,
+            split_probability: 0.3,
+            split_angle: 45.0,
+            split_position: 0.4,
+            split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: false, // Branches can touch ground
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.6,
+            crown_shape: CrownShape::Spherical,
+            crown_influence: 0.4,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.15, 0.1, 0.12), // Dark purple-black bark
+            foliage_color: Color::from_rgb(0.25, 0.1, 0.3), // Dark purple foliage
+            foliage: Some(FoliagePresetValues::corrupted()),
+            growth: Some(GrowthPresetValues::gnarled()),
+        }
+    }
+
+    /// Glowing Tree: Magical tree base (oak-like) with emission-ready foliage
+    pub fn glowing_tree() -> Self {
+        Self {
+            trunk_height: 7.0,
+            trunk_radius: 0.5,
+            radial_segments: 8,
+            height_segments: 5,
+            trunk_taper: 0.3,
+            trunk_taper_curve: 0.5,
+            trunk_flare: 1.2,
+            trunk_randomness: 0.08,
+            root_flare_count: 4,
+            root_flare_spread: 0.5,
+            root_flare_height: 0.15,
+            trunk_termination: TrunkTermination::LeaderBranch,
+            leader_length: 0.12,
+            leader_taper: 0.1,
+            leader_has_branches: true,
+            branch_start: 0.35,
+            branch_end: 0.9,
+            branch_density: 2.2,
+            branch_length: 0.6,
+            branch_angle: 50.0,
+            branch_radius_ratio: 0.35,
+            branch_taper: 0.7,
+            phyllotaxis_angle: 137.5,
+            branch_randomness: 0.22,
+            up_attraction: 0.12,
+            branch_recursion: 2,
+            sub_branch_count: 3,
+            sub_branch_scale: 0.55,
+            branch_length_variation: 0.18,
+            sub_branch_position_bias: 0.15,
+            apical_dominance: 0.35,
+            branch_flatness: 0.25,
+            branch_angle_curve: 0.0,
+            crown_angle_variation: -0.15,
+            trunk_twist: 12.0,
+            branch_twist: 8.0,
+            gravity_strength: 0.2,
+            stiffness: 0.55,
+            break_chance: 0.03,
+            split_enabled: true,
+            split_probability: 0.4,
+            split_angle: 32.0,
+            split_position: 0.5,
+            split_radius_threshold: 0.1,
+            split_radius_multiplier: 0.9,
+            floor_avoidance: true,
+            floor_level: 0.0,
+            branch_collar_enabled: true,
+            branch_collar_length: 1.5,
+            crown_shape: CrownShape::Spherical,
+            crown_influence: 0.9,
+            crown_base_size: 0.0,
+            crown_height: -1.0,
+            trunk_color: Color::from_rgb(0.25, 0.2, 0.25), // Dark mystical bark
+            foliage_color: Color::from_rgb(0.4, 0.9, 0.6), // Bright magical green (emission-ready)
+            foliage: Some(FoliagePresetValues::glowing()),
+            growth: Some(GrowthPresetValues::spreading()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1338,7 +2562,6 @@ mod tests {
         assert!(TreePreset::Palm.get_values().is_some());
         assert!(TreePreset::Cypress.get_values().is_some());
         assert!(TreePreset::Bonsai.get_values().is_some());
-        // New presets
         assert!(TreePreset::Maple.get_values().is_some());
         assert!(TreePreset::Spruce.get_values().is_some());
         assert!(TreePreset::Poplar.get_values().is_some());
@@ -1347,6 +2570,23 @@ mod tests {
         assert!(TreePreset::JapaneseMaple.get_values().is_some());
         assert!(TreePreset::DeadTree.get_values().is_some());
         assert!(TreePreset::Redwood.get_values().is_some());
+        // Existing species (added earlier)
+        assert!(TreePreset::Elm.get_values().is_some());
+        assert!(TreePreset::Fir.get_values().is_some());
+        assert!(TreePreset::Cedar.get_values().is_some());
+        assert!(TreePreset::JoshuaTree.get_values().is_some());
+        assert!(TreePreset::Olive.get_values().is_some());
+        // New species (Phase 2)
+        assert!(TreePreset::CherryBlossom.get_values().is_some());
+        assert!(TreePreset::Acacia.get_values().is_some());
+        assert!(TreePreset::Beech.get_values().is_some());
+        assert!(TreePreset::Ginkgo.get_values().is_some());
+        assert!(TreePreset::WeepingCherry.get_values().is_some());
+        // Fantasy presets (Phase 3)
+        assert!(TreePreset::WorldTree.get_values().is_some());
+        assert!(TreePreset::CrystalTree.get_values().is_some());
+        assert!(TreePreset::CorruptedTree.get_values().is_some());
+        assert!(TreePreset::GlowingTree.get_values().is_some());
     }
 
     #[test]
@@ -1471,5 +2711,271 @@ mod tests {
         let forking = GrowthPresetValues::forking();
         assert!(forking.split_threshold < 0.4); // Frequent forking
         assert!(forking.apical_dominance < 0.5); // Low dominance
+    }
+
+    // New species presets tests
+    #[test]
+    fn test_elm_vase_shape() {
+        let elm = TreePresetValues::elm();
+        assert_eq!(elm.crown_shape, CrownShape::Hemispherical);
+        assert!(elm.branch_angle_curve < 0.0); // Arches outward
+        assert!(elm.apical_dominance < 0.4); // Low - vase-shaped
+    }
+
+    #[test]
+    fn test_fir_symmetric_pyramid() {
+        let fir = TreePresetValues::fir();
+        assert_eq!(fir.crown_shape, CrownShape::Conical);
+        assert_eq!(fir.phyllotaxis_angle, 72.0); // Whorled branching
+        assert!(fir.apical_dominance > 0.8); // Strong central leader
+    }
+
+    #[test]
+    fn test_cedar_flat_sprays() {
+        let cedar = TreePresetValues::cedar();
+        assert!(cedar.trunk_flare >= 1.5); // Buttressed base
+        assert!(cedar.branch_flatness > 0.6); // Flat spray effect
+    }
+
+    #[test]
+    fn test_joshua_tree_chaotic() {
+        let joshua = TreePresetValues::joshua_tree();
+        assert!(joshua.split_probability > 0.8); // High dichotomous forking
+        assert!(joshua.branch_randomness > 0.6); // High randomness
+        assert_eq!(joshua.sub_branch_count, 2); // Binary forking
+    }
+
+    #[test]
+    fn test_olive_gnarled() {
+        let olive = TreePresetValues::olive();
+        assert!(olive.trunk_twist >= 50.0); // High twist
+        assert!(olive.trunk_randomness > 0.3); // Gnarled appearance
+    }
+
+    // Style modifier tests
+    #[test]
+    fn test_style_modifier_none_returns_none() {
+        assert!(StyleModifier::None.get_values().is_none());
+    }
+
+    #[test]
+    fn test_style_modifiers_return_values() {
+        assert!(StyleModifier::StylizedCartoon.get_values().is_some());
+        assert!(StyleModifier::LowPoly.get_values().is_some());
+        assert!(StyleModifier::Horror.get_values().is_some());
+        assert!(StyleModifier::Realistic.get_values().is_some());
+        assert!(StyleModifier::MobileOptimized.get_values().is_some());
+        assert!(StyleModifier::AAARealistic.get_values().is_some());
+    }
+
+    #[test]
+    fn test_stylized_cartoon_modifier() {
+        let cartoon = StyleModifierValues::stylized_cartoon();
+        assert!(cartoon.trunk_radius_mult > 1.0); // Thicker trunk
+        assert!(cartoon.randomness_add < 0.0); // Smoother
+        assert_eq!(cartoon.radial_segments, Some(6));
+    }
+
+    #[test]
+    fn test_horror_modifier() {
+        let horror = StyleModifierValues::horror();
+        assert!(horror.randomness_add > 0.2);
+        assert!(horror.twist_add > 20.0);
+        assert!(horror.break_chance_add > 0.1);
+    }
+
+    #[test]
+    fn test_mobile_optimized_modifier() {
+        let mobile = StyleModifierValues::mobile_optimized();
+        assert_eq!(mobile.radial_segments, Some(4)); // Minimum
+        assert!(mobile.recursion_mult <= 0.5); // Half recursion
+        assert!(mobile.foliage_density_mult <= 0.5); // Half foliage
+        assert_eq!(mobile.smooth_iterations, 0); // No smoothing
+    }
+
+    #[test]
+    fn test_aaa_realistic_modifier() {
+        let aaa = StyleModifierValues::aaa_realistic();
+        assert_eq!(aaa.radial_segments, Some(16)); // High poly
+        assert!(aaa.recursion_mult >= 1.25); // More recursion
+        assert!(aaa.foliage_density_mult >= 1.5); // Dense
+        assert!(aaa.smooth_iterations >= 3); // Good smoothing
+    }
+
+    // Scale modifier tests
+    #[test]
+    fn test_scale_modifier_mature_returns_none() {
+        assert!(ScaleModifier::Mature.get_values().is_none());
+    }
+
+    #[test]
+    fn test_scale_modifiers_return_values() {
+        assert!(ScaleModifier::Sapling.get_values().is_some());
+        assert!(ScaleModifier::Ancient.get_values().is_some());
+        assert!(ScaleModifier::Dead.get_values().is_some());
+    }
+
+    #[test]
+    fn test_sapling_modifier() {
+        let sapling = ScaleModifierValues::sapling();
+        assert!(sapling.height_mult < 0.3); // Small
+        assert!(sapling.radius_mult < 0.2); // Thin
+        assert!(sapling.foliage_enabled);
+    }
+
+    #[test]
+    fn test_ancient_modifier() {
+        let ancient = ScaleModifierValues::ancient();
+        assert!(ancient.height_mult > 1.0);
+        assert!(ancient.radius_mult > 1.5);
+        assert!(ancient.foliage_enabled);
+    }
+
+    #[test]
+    fn test_dead_modifier() {
+        let dead = ScaleModifierValues::dead();
+        assert!(!dead.foliage_enabled); // No foliage
+        assert!(dead.break_chance_add > 0.2); // Many broken branches
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 5: Season Modifier Tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_season_modifier_none_returns_none() {
+        assert!(SeasonModifier::None.get_values().is_none());
+    }
+
+    #[test]
+    fn test_season_modifiers_return_values() {
+        assert!(SeasonModifier::Spring.get_values().is_some());
+        assert!(SeasonModifier::Summer.get_values().is_some());
+        assert!(SeasonModifier::Autumn.get_values().is_some());
+        assert!(SeasonModifier::Winter.get_values().is_some());
+    }
+
+    #[test]
+    fn test_spring_modifier() {
+        let spring = SeasonModifierValues::spring();
+        assert!(spring.foliage_density_mult < 1.0); // Less than summer
+        assert!(spring.leaf_scale_mult < 1.0); // Smaller leaves
+        assert!(spring.foliage_color.is_some()); // Custom color
+        assert!(!spring.foliage_disabled);
+    }
+
+    #[test]
+    fn test_summer_modifier() {
+        let summer = SeasonModifierValues::summer();
+        assert_eq!(summer.foliage_density_mult, 1.0); // Full foliage
+        assert_eq!(summer.leaf_scale_mult, 1.0); // Normal leaves
+        assert!(summer.foliage_color.is_none()); // Use preset color
+        assert!(!summer.foliage_disabled);
+    }
+
+    #[test]
+    fn test_autumn_modifier() {
+        let autumn = SeasonModifierValues::autumn();
+        assert!(autumn.foliage_density_mult < 1.0); // Less foliage
+        assert!(autumn.foliage_color.is_some()); // Warm colors
+        assert!(!autumn.foliage_disabled);
+    }
+
+    #[test]
+    fn test_winter_modifier() {
+        let winter = SeasonModifierValues::winter();
+        assert_eq!(winter.foliage_density_mult, 0.0); // No foliage
+        assert!(winter.snow_enabled); // Snow enabled
+        assert!(winter.foliage_disabled); // Deciduous have no foliage
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 2: New Species Tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_cherry_blossom_ornamental() {
+        let cherry = TreePresetValues::cherry_blossom();
+        assert_eq!(cherry.crown_shape, CrownShape::Spreading);
+        assert!(cherry.branch_flatness > 0.3); // Horizontal layered
+        assert!(cherry.foliage.is_some());
+    }
+
+    #[test]
+    fn test_acacia_umbrella_shape() {
+        let acacia = TreePresetValues::acacia();
+        assert_eq!(acacia.crown_shape, CrownShape::Umbrella);
+        assert!(acacia.branch_angle > 85.0); // Near horizontal
+        assert!(acacia.branch_flatness > 0.8); // Extreme horizontal
+        assert!(acacia.apical_dominance < 0.2); // Very low
+        assert!(acacia.branch_start > 0.6); // Crown only
+    }
+
+    #[test]
+    fn test_beech_dense_crown() {
+        let beech = TreePresetValues::beech();
+        assert_eq!(beech.crown_shape, CrownShape::Spherical);
+        assert!(beech.branch_density >= 3.0); // Dense
+        assert!(beech.sub_branch_count >= 4);
+    }
+
+    #[test]
+    fn test_ginkgo_angular() {
+        let ginkgo = TreePresetValues::ginkgo();
+        assert!(ginkgo.branch_randomness > 0.35); // High randomness
+        assert!(ginkgo.up_attraction > 0.2); // Reaches upward
+    }
+
+    #[test]
+    fn test_weeping_cherry_cascade() {
+        let weeping = TreePresetValues::weeping_cherry();
+        assert!(weeping.up_attraction < -0.5); // Strong downward
+        assert!(weeping.gravity_strength > 0.7); // Strong weeping
+        assert!(weeping.stiffness < 0.3); // Flexible
+        assert!(weeping.branch_recursion >= 3); // Deep cascade
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 3: Fantasy Preset Tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_world_tree_massive_scale() {
+        let world = TreePresetValues::world_tree();
+        assert!(world.trunk_height >= 50.0); // Massive
+        assert!(world.trunk_radius >= 10.0); // Giant trunk
+        assert!(world.root_flare_height >= 0.3); // Tall root buttresses
+        assert!(world.branch_density < 1.0); // Few massive branches
+    }
+
+    #[test]
+    fn test_crystal_tree_geometric() {
+        let crystal = TreePresetValues::crystal_tree();
+        assert_eq!(crystal.radial_segments, 6); // Hexagonal
+        assert_eq!(crystal.trunk_randomness, 0.0); // No randomness
+        assert_eq!(crystal.branch_randomness, 0.0); // Pure geometry
+        assert_eq!(crystal.gravity_strength, 0.0); // No gravity
+        assert!(!crystal.branch_collar_enabled); // No organic collars
+        assert!(crystal.foliage.is_none()); // No foliage
+    }
+
+    #[test]
+    fn test_corrupted_tree_twisted() {
+        let corrupted = TreePresetValues::corrupted_tree();
+        assert!(corrupted.trunk_twist >= 60.0); // Extreme twist
+        assert!(corrupted.break_chance >= 0.4); // Many broken branches
+        assert!(corrupted.trunk_randomness > 0.3); // Irregular
+        assert!(corrupted.foliage.is_some()); // Has dark foliage
+    }
+
+    #[test]
+    fn test_glowing_tree_magical() {
+        let glowing = TreePresetValues::glowing_tree();
+        assert_eq!(glowing.crown_shape, CrownShape::Spherical);
+        assert!(glowing.foliage.is_some()); // Has glowing foliage
+                                            // Check foliage color is bright (emission-ready)
+        if let Some(f) = &glowing.foliage {
+            assert!(f.foliage_color.g > 0.8); // Bright green
+        }
     }
 }

@@ -21,6 +21,7 @@ pub enum CrownShape {
     InverseConical = 6,
     TendFlame = 7,
     Spreading = 8, // Widest at ~40% height, gradual taper - for JapaneseMaple, Oak variants
+    Umbrella = 9,  // Flat top, wide spread - for Acacia, umbrella-shaped trees
 }
 
 impl CrownShape {
@@ -76,6 +77,28 @@ impl CrownShape {
                     // Gentle taper after peak
                     let falloff = (t - peak) / (1.0 - peak);
                     1.0 - 0.4 * falloff
+                }
+            }
+
+            // Umbrella - flat top with wide horizontal spread
+            // Peak at 85% height (near top), very short branches below crown
+            // For Acacia, umbrella thorn trees with distinctive savanna silhouette
+            CrownShape::Umbrella => {
+                let crown_start = 0.7; // Crown starts at 70% height
+                if t < crown_start {
+                    // Below crown: minimal branch length (or none)
+                    0.1
+                } else {
+                    // Crown zone: wide and nearly uniform (flat top)
+                    let crown_t = (t - crown_start) / (1.0 - crown_start);
+                    // Peak at middle of crown zone, gentle taper at very top
+                    let peak = 0.5;
+                    if crown_t < peak {
+                        0.3 + 0.7 * (crown_t / peak)
+                    } else {
+                        // Slight taper at very top
+                        1.0 - 0.15 * ((crown_t - peak) / (1.0 - peak))
+                    }
                 }
             }
         }
@@ -177,5 +200,20 @@ mod tests {
         assert!(after_peak > at_top);
         // Peak value should be 1.0
         assert!((at_peak - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_umbrella_flat_top() {
+        let shape = CrownShape::Umbrella;
+        let below_crown = shape.get_length_multiplier(0.5);
+        let in_crown = shape.get_length_multiplier(0.85);
+        let at_top = shape.get_length_multiplier(1.0);
+
+        // Below crown should be minimal
+        assert!(below_crown < 0.2);
+        // Crown should be wide
+        assert!(in_crown > 0.8);
+        // Top should be nearly as wide (flat)
+        assert!(at_top > 0.8);
     }
 }

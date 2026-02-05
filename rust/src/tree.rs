@@ -19,7 +19,10 @@ use crate::growth::{
 use crate::manifold_mesher::{segments_to_tree, ManifoldMesherConfig};
 use crate::property::{BranchProperty, PropertyMode};
 use crate::smoothing::{laplacian_smooth, laplacian_smooth_weighted, recalculate_normals};
-use crate::tree_preset::{GrowthPreset, GrowthPresetValues, TreePreset, TreePresetValues};
+use crate::tree_preset::{
+    GrowthPreset, GrowthPresetValues, ScaleModifier, ScaleModifierValues, SeasonModifier,
+    SeasonModifierValues, StyleModifier, StyleModifierValues, TreePreset, TreePresetValues,
+};
 
 /// How the trunk terminates at the top
 #[derive(GodotConvert, Var, Export, Default, Clone, Copy, Debug, PartialEq)]
@@ -54,6 +57,24 @@ pub struct PixyTree {
     #[var(get = get_preset, set = set_preset)]
     #[init(val = TreePreset::Custom)]
     preset: TreePreset,
+
+    /// Style modifier for different game art styles
+    #[export]
+    #[var(get = get_style_modifier, set = set_style_modifier)]
+    #[init(val = StyleModifier::None)]
+    style_modifier: StyleModifier,
+
+    /// Scale modifier for age/size variants
+    #[export]
+    #[var(get = get_scale_modifier, set = set_scale_modifier)]
+    #[init(val = ScaleModifier::Mature)]
+    scale_modifier: ScaleModifier,
+
+    /// Season modifier for seasonal appearance
+    #[export]
+    #[var(get = get_season_modifier, set = set_season_modifier)]
+    #[init(val = SeasonModifier::None)]
+    season_modifier: SeasonModifier,
 
     // ═══════════════════════════════════════════
     // Trunk Settings
@@ -890,7 +911,132 @@ impl PixyTree {
             // This prevents settings from bleeding between presets
             self.reset_to_defaults();
             self.apply_preset_values(&values);
+            // Apply modifiers after preset
+            self.apply_modifiers();
         }
+    }
+
+    #[func]
+    fn get_style_modifier(&self) -> StyleModifier {
+        self.style_modifier
+    }
+
+    #[func]
+    fn set_style_modifier(&mut self, value: StyleModifier) {
+        self.style_modifier = value;
+        // Re-apply preset with new modifier
+        if let Some(preset_values) = self.preset.get_values() {
+            self.reset_to_defaults();
+            self.apply_preset_values(&preset_values);
+            self.apply_modifiers();
+        } else {
+            // Custom preset - just apply modifiers to current values
+            self.apply_modifiers();
+        }
+    }
+
+    #[func]
+    fn get_scale_modifier(&self) -> ScaleModifier {
+        self.scale_modifier
+    }
+
+    #[func]
+    fn set_scale_modifier(&mut self, value: ScaleModifier) {
+        self.scale_modifier = value;
+        // Re-apply preset with new modifier
+        if let Some(preset_values) = self.preset.get_values() {
+            self.reset_to_defaults();
+            self.apply_preset_values(&preset_values);
+            self.apply_modifiers();
+        } else {
+            // Custom preset - just apply modifiers to current values
+            self.apply_modifiers();
+        }
+    }
+
+    #[func]
+    fn get_season_modifier(&self) -> SeasonModifier {
+        self.season_modifier
+    }
+
+    #[func]
+    fn set_season_modifier(&mut self, value: SeasonModifier) {
+        self.season_modifier = value;
+        // Re-apply preset with new modifier
+        if let Some(preset_values) = self.preset.get_values() {
+            self.reset_to_defaults();
+            self.apply_preset_values(&preset_values);
+            self.apply_modifiers();
+        } else {
+            // Custom preset - just apply modifiers to current values
+            self.apply_modifiers();
+        }
+    }
+
+    /// Apply style, scale, and season modifiers to current values
+    fn apply_modifiers(&mut self) {
+        // Apply style modifier
+        if let Some(style_values) = self.style_modifier.get_values() {
+            self.apply_style_modifier_values(&style_values);
+        }
+        // Apply scale modifier
+        if let Some(scale_values) = self.scale_modifier.get_values() {
+            self.apply_scale_modifier_values(&scale_values);
+        }
+        // Apply season modifier
+        if let Some(season_values) = self.season_modifier.get_values() {
+            self.apply_season_modifier_values(&season_values);
+        }
+    }
+
+    fn apply_style_modifier_values(&mut self, values: &StyleModifierValues) {
+        self.trunk_radius *= values.trunk_radius_mult;
+        self.trunk_randomness = (self.trunk_randomness + values.randomness_add).max(0.0);
+        self.branch_randomness = (self.branch_randomness + values.randomness_add).max(0.0);
+        self.trunk_twist += values.twist_add;
+        self.branch_twist += values.twist_add * 0.5;
+        self.break_chance = (self.break_chance + values.break_chance_add).clamp(0.0, 0.5);
+        if let Some(segments) = values.radial_segments {
+            self.radial_segments = segments;
+        }
+        // Apply recursion multiplier
+        self.branch_recursion =
+            ((self.branch_recursion as f32 * values.recursion_mult).round() as i32).max(0);
+        // Apply foliage density multiplier
+        self.foliage_density *= values.foliage_density_mult;
+        // Apply smoothing iterations if specified
+        if values.smooth_iterations >= 0 {
+            self.smooth_iterations = values.smooth_iterations;
+            self.smooth_enabled = values.smooth_iterations > 0;
+        }
+    }
+
+    fn apply_scale_modifier_values(&mut self, values: &ScaleModifierValues) {
+        self.trunk_height *= values.height_mult;
+        self.trunk_radius *= values.radius_mult;
+        self.branch_density *= values.density_mult;
+        self.trunk_randomness = (self.trunk_randomness + values.randomness_add).max(0.0);
+        self.break_chance = (self.break_chance + values.break_chance_add).clamp(0.0, 0.5);
+        if !values.foliage_enabled {
+            self.foliage_enabled = false;
+        }
+    }
+
+    fn apply_season_modifier_values(&mut self, values: &SeasonModifierValues) {
+        // Apply foliage density multiplier
+        self.foliage_density *= values.foliage_density_mult;
+        // Apply leaf size multiplier
+        self.leaf_size *= values.leaf_scale_mult;
+        // Override foliage color if specified
+        if let Some(color) = values.foliage_color {
+            self.foliage_color = color;
+        }
+        // Disable foliage for deciduous winter
+        if values.foliage_disabled {
+            self.foliage_enabled = false;
+        }
+        // Note: snow_enabled would be used by a shader or additional mesh generation
+        // For now, the value is available in SeasonModifier::get_values() for runtime query
     }
 
     /// Reset all generation-related properties to their default values

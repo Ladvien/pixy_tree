@@ -955,6 +955,287 @@ impl FoliagePresetValues {
             foliage_color: Color::from_rgb(0.12, 0.32, 0.21), // Dark green
         }
     }
+
+    /// Elm: Dense crossed planes, vase-shaped distribution
+    pub fn elm() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RadialOutward,
+            density: 4.0,
+            cluster_size: 5,
+            leaf_size: 0.28,
+            leaf_size_variation: 0.18,
+            radius_threshold: 0.18,
+            height_falloff: 0.25,
+            leaf_droop: 0.12,
+            rotation_variation: 0.55,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.2, 0.4, 0.15), // Medium green
+        }
+    }
+
+    /// Fir: Dense needle clusters, follow branch direction
+    pub fn fir() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 5.5,
+            cluster_size: 7,
+            leaf_size: 0.2,
+            leaf_size_variation: 0.08,
+            radius_threshold: 0.2,
+            height_falloff: 0.15,
+            leaf_droop: 0.05,
+            rotation_variation: 0.25,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.1, 0.28, 0.2), // Blue-green
+        }
+    }
+
+    /// Cedar: Flat spray clusters, horizontal spread
+    pub fn cedar() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::ClusterSphere,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::HorizontalSpread,
+            density: 4.0,
+            cluster_size: 6,
+            leaf_size: 0.22,
+            leaf_size_variation: 0.12,
+            radius_threshold: 0.2,
+            height_falloff: 0.2,
+            leaf_droop: 0.08,
+            rotation_variation: 0.4,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.15, 0.35, 0.22), // Dark green
+        }
+    }
+
+    /// Joshua Tree: Star burst clusters at branch tips
+    pub fn joshua_tree() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::StarBurst,
+            placement: FoliagePlacement::TipClusters,
+            orientation: LeafOrientation::RadialOutward,
+            density: 2.5,
+            cluster_size: 10,
+            leaf_size: 0.35,
+            leaf_size_variation: 0.2,
+            radius_threshold: 0.25,
+            height_falloff: 0.1,
+            leaf_droop: 0.05,
+            rotation_variation: 0.5,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.35, 0.45, 0.25), // Yellow-green
+        }
+    }
+
+    /// Olive: Small silver-green leaves, sparse
+    pub fn olive() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 3.5,
+            cluster_size: 4,
+            leaf_size: 0.15,
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.15,
+            height_falloff: 0.2,
+            leaf_droop: 0.1,
+            rotation_variation: 0.6,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.4, 0.5, 0.35), // Silver-green
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 2: New Species Foliage Presets
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Cherry Blossom: Pink-white flower clusters
+    pub fn cherry_blossom() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 5.0, // Dense blossoms
+            cluster_size: 5,
+            leaf_size: 0.22,
+            leaf_size_variation: 0.18,
+            radius_threshold: 0.15,
+            height_falloff: 0.25,
+            leaf_droop: 0.12,
+            rotation_variation: 0.7,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(1.0, 0.85, 0.88), // Pink-white
+        }
+    }
+
+    /// Acacia: Sparse, feathery foliage
+    pub fn acacia() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::TipClusters,
+            orientation: LeafOrientation::HorizontalSpread,
+            density: 2.5, // Sparse savanna look
+            cluster_size: 6,
+            leaf_size: 0.28,
+            leaf_size_variation: 0.2,
+            radius_threshold: 0.2,
+            height_falloff: 0.1,
+            leaf_droop: 0.08,
+            rotation_variation: 0.5,
+            use_crown_density: false, // Uniform flat canopy
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.35, 0.5, 0.25), // Olive green
+        }
+    }
+
+    /// Beech: Dense, rich green foliage
+    pub fn beech() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RadialOutward,
+            density: 5.0, // Very dense
+            cluster_size: 5,
+            leaf_size: 0.25,
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.18,
+            height_falloff: 0.22,
+            leaf_droop: 0.1,
+            rotation_variation: 0.55,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.2, 0.4, 0.15), // Rich green
+        }
+    }
+
+    /// Ginkgo: Fan-shaped leaves, light yellow-green
+    pub fn ginkgo() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 3.5,
+            cluster_size: 4,
+            leaf_size: 0.3, // Distinctive fan shape
+            leaf_size_variation: 0.18,
+            radius_threshold: 0.12,
+            height_falloff: 0.3,
+            leaf_droop: 0.05, // Leaves hold horizontal
+            rotation_variation: 0.6,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.6, 0.7, 0.3), // Light yellow-green
+        }
+    }
+
+    /// Weeping Cherry: Cascading pink blossoms
+    pub fn weeping_cherry() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::SingleQuad, // Billboard for cascade effect
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 5.5, // Dense cascade
+            cluster_size: 4,
+            leaf_size: 0.18,
+            leaf_size_variation: 0.22,
+            radius_threshold: 0.12,
+            height_falloff: 0.4, // More at tips
+            leaf_droop: 0.5,     // Heavy droop
+            rotation_variation: 0.75,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(1.0, 0.8, 0.85), // Pink
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 3: Fantasy Foliage Presets
+    // ═══════════════════════════════════════════════════════════════
+
+    /// World Tree: Dense, ancient foliage
+    pub fn world_tree() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::Icosphere, // Large rounded canopy blobs
+            placement: FoliagePlacement::TipClusters,
+            orientation: LeafOrientation::RadialOutward,
+            density: 3.0,
+            cluster_size: 10, // Large clusters
+            leaf_size: 1.5,   // Massive scale foliage
+            leaf_size_variation: 0.25,
+            radius_threshold: 0.3,
+            height_falloff: 0.2,
+            leaf_droop: 0.15,
+            rotation_variation: 0.5,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.15, 0.35, 0.12), // Deep forest green
+        }
+    }
+
+    /// Corrupted: Sparse, dark, diseased foliage
+    pub fn corrupted() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::StarBurst, // Spiky, aggressive
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 1.5, // Sparse
+            cluster_size: 3,
+            leaf_size: 0.25,
+            leaf_size_variation: 0.3,
+            radius_threshold: 0.12,
+            height_falloff: 0.1,
+            leaf_droop: 0.25,
+            rotation_variation: 0.8,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.25, 0.1, 0.3), // Dark purple
+        }
+    }
+
+    /// Glowing: Dense magical foliage (emission-ready color)
+    pub fn glowing() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::Icosphere, // Rounded for glow effect
+            placement: FoliagePlacement::TipClusters,
+            orientation: LeafOrientation::RadialOutward,
+            density: 4.0, // Dense for bright effect
+            cluster_size: 8,
+            leaf_size: 0.35,
+            leaf_size_variation: 0.2,
+            radius_threshold: 0.15,
+            height_falloff: 0.15,
+            leaf_droop: 0.08,
+            rotation_variation: 0.4,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.4, 0.9, 0.6), // Bright magical green
+        }
+    }
 }
 
 #[cfg(test)]
