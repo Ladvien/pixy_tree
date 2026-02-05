@@ -1236,6 +1236,241 @@ impl FoliagePresetValues {
             foliage_color: Color::from_rgb(0.4, 0.9, 0.6), // Bright magical green
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 4: New Species Foliage Presets
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Blue Spruce: Blue-gray needle clusters
+    pub fn blue_spruce() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 5.5,
+            cluster_size: 7,
+            leaf_size: 0.22,
+            leaf_size_variation: 0.08,
+            radius_threshold: 0.22,
+            height_falloff: 0.18,
+            leaf_droop: 0.05,
+            rotation_variation: 0.25,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.45, 0.55, 0.65), // Blue-gray
+        }
+    }
+
+    /// Douglas Fir: Dense needle clusters, flat sprays
+    pub fn douglas_fir() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 5.0,
+            cluster_size: 6,
+            leaf_size: 0.2,
+            leaf_size_variation: 0.1,
+            radius_threshold: 0.2,
+            height_falloff: 0.15,
+            leaf_droop: 0.08,
+            rotation_variation: 0.3,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.12, 0.32, 0.18), // Dark green
+        }
+    }
+
+    /// Ponderosa Pine: Long needle clusters
+    pub fn ponderosa_pine() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 4.0,
+            cluster_size: 5,
+            leaf_size: 0.3, // Longer needles
+            leaf_size_variation: 0.12,
+            radius_threshold: 0.18,
+            height_falloff: 0.2,
+            leaf_droop: 0.1,
+            rotation_variation: 0.35,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.15, 0.35, 0.2), // Yellow-green
+        }
+    }
+
+    /// Bristlecone Pine: Sparse, ancient-looking needles
+    pub fn bristlecone_pine() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::NeedleCluster,
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 2.0, // Sparse
+            cluster_size: 4,
+            leaf_size: 0.18,
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.15,
+            height_falloff: 0.1,
+            leaf_droop: 0.05,
+            rotation_variation: 0.4,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.2, 0.35, 0.25), // Dark green
+        }
+    }
+
+    /// Ash: Compound leaves, open crown
+    pub fn ash() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RadialOutward,
+            density: 3.5,
+            cluster_size: 4,
+            leaf_size: 0.28,
+            leaf_size_variation: 0.18,
+            radius_threshold: 0.18,
+            height_falloff: 0.25,
+            leaf_droop: 0.12,
+            rotation_variation: 0.55,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.2, 0.42, 0.18), // Medium green
+        }
+    }
+
+    /// Linden: Dense heart-shaped leaves
+    pub fn linden() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RadialOutward,
+            density: 5.0, // Very dense
+            cluster_size: 5,
+            leaf_size: 0.25,
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.18,
+            height_falloff: 0.22,
+            leaf_droop: 0.1,
+            rotation_variation: 0.5,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.22, 0.45, 0.18), // Rich green
+        }
+    }
+
+    /// Sycamore: Large palmate leaves
+    pub fn sycamore() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::CrossedPlanes,
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RadialOutward,
+            density: 3.5,
+            cluster_size: 4,
+            leaf_size: 0.35, // Large leaves
+            leaf_size_variation: 0.2,
+            radius_threshold: 0.2,
+            height_falloff: 0.25,
+            leaf_droop: 0.15,
+            rotation_variation: 0.6,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.25, 0.45, 0.2), // Medium green
+        }
+    }
+
+    /// Aspen: Small trembling leaves with high rotation variation
+    pub fn aspen() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::SingleQuad, // For trembling effect
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 4.0,
+            cluster_size: 5,
+            leaf_size: 0.18, // Small round leaves
+            leaf_size_variation: 0.12,
+            radius_threshold: 0.12,
+            height_falloff: 0.3,
+            leaf_droop: 0.05,
+            rotation_variation: 0.8, // High rotation for trembling
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.4, 0.55, 0.3), // Light green
+        }
+    }
+
+    /// Royal Palm: Large arching fronds
+    pub fn royal_palm() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::SingleQuad,
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 1.5,
+            cluster_size: 2,
+            leaf_size: 0.9, // Large fronds
+            leaf_size_variation: 0.15,
+            radius_threshold: 0.25,
+            height_falloff: 0.1,
+            leaf_droop: 0.35,
+            rotation_variation: 0.15,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.15, 0.5, 0.2), // Dark green
+        }
+    }
+
+    /// Fan Palm: Palmate fronds
+    pub fn fan_palm() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::StarBurst, // Fan shape
+            placement: FoliagePlacement::TerminalBranches,
+            orientation: LeafOrientation::FollowBranch,
+            density: 2.0,
+            cluster_size: 3,
+            leaf_size: 0.7, // Large fan fronds
+            leaf_size_variation: 0.18,
+            radius_threshold: 0.25,
+            height_falloff: 0.1,
+            leaf_droop: 0.25,
+            rotation_variation: 0.2,
+            use_crown_density: false,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.2, 0.55, 0.25), // Bright green
+        }
+    }
+
+    /// Eucalyptus: Hanging sickle-shaped leaves
+    pub fn eucalyptus() -> Self {
+        Self {
+            enabled: true,
+            leaf_style: LeafStyle::SingleQuad, // Hanging
+            placement: FoliagePlacement::AllBranches,
+            orientation: LeafOrientation::RandomUpward,
+            density: 4.0,
+            cluster_size: 4,
+            leaf_size: 0.22,
+            leaf_size_variation: 0.18,
+            radius_threshold: 0.15,
+            height_falloff: 0.3,
+            leaf_droop: 0.45, // Heavy droop
+            rotation_variation: 0.7,
+            use_crown_density: true,
+            separate_mesh: true,
+            foliage_color: Color::from_rgb(0.35, 0.5, 0.4), // Blue-green
+        }
+    }
 }
 
 #[cfg(test)]

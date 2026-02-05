@@ -20,8 +20,9 @@ use crate::manifold_mesher::{segments_to_tree, ManifoldMesherConfig};
 use crate::property::{BranchProperty, PropertyMode};
 use crate::smoothing::{laplacian_smooth, laplacian_smooth_weighted, recalculate_normals};
 use crate::tree_preset::{
-    GrowthPreset, GrowthPresetValues, ScaleModifier, ScaleModifierValues, SeasonModifier,
-    SeasonModifierValues, StyleModifier, StyleModifierValues, TreePreset, TreePresetValues,
+    BonsaiStyle, BonsaiStyleValues, GrowthPreset, GrowthPresetValues, ScaleModifier,
+    ScaleModifierValues, SeasonModifier, SeasonModifierValues, StyleModifier, StyleModifierValues,
+    TreePreset, TreePresetValues,
 };
 
 /// How the trunk terminates at the top
@@ -75,6 +76,12 @@ pub struct PixyTree {
     #[var(get = get_season_modifier, set = set_season_modifier)]
     #[init(val = SeasonModifier::None)]
     season_modifier: SeasonModifier,
+
+    /// Bonsai style modifier for artistic tree shaping
+    #[export]
+    #[var(get = get_bonsai_style, set = set_bonsai_style)]
+    #[init(val = BonsaiStyle::None)]
+    bonsai_style: BonsaiStyle,
 
     // ═══════════════════════════════════════════
     // Trunk Settings
@@ -973,7 +980,26 @@ impl PixyTree {
         }
     }
 
-    /// Apply style, scale, and season modifiers to current values
+    #[func]
+    fn get_bonsai_style(&self) -> BonsaiStyle {
+        self.bonsai_style
+    }
+
+    #[func]
+    fn set_bonsai_style(&mut self, value: BonsaiStyle) {
+        self.bonsai_style = value;
+        // Re-apply preset with new modifier
+        if let Some(preset_values) = self.preset.get_values() {
+            self.reset_to_defaults();
+            self.apply_preset_values(&preset_values);
+            self.apply_modifiers();
+        } else {
+            // Custom preset - just apply modifiers to current values
+            self.apply_modifiers();
+        }
+    }
+
+    /// Apply style, scale, season, and bonsai modifiers to current values
     fn apply_modifiers(&mut self) {
         // Apply style modifier
         if let Some(style_values) = self.style_modifier.get_values() {
@@ -986,6 +1012,10 @@ impl PixyTree {
         // Apply season modifier
         if let Some(season_values) = self.season_modifier.get_values() {
             self.apply_season_modifier_values(&season_values);
+        }
+        // Apply bonsai style modifier
+        if let Some(bonsai_values) = self.bonsai_style.get_values() {
+            self.apply_bonsai_style_values(&bonsai_values);
         }
     }
 
@@ -1037,6 +1067,31 @@ impl PixyTree {
         }
         // Note: snow_enabled would be used by a shader or additional mesh generation
         // For now, the value is available in SeasonModifier::get_values() for runtime query
+    }
+
+    fn apply_bonsai_style_values(&mut self, values: &BonsaiStyleValues) {
+        // Override trunk parameters
+        self.trunk_twist = values.trunk_twist;
+        self.trunk_taper = values.trunk_taper;
+
+        // Override branch parameters
+        self.branch_randomness = values.branch_randomness;
+        self.up_attraction = values.up_attraction;
+        self.gravity_strength = values.gravity_strength;
+        self.branch_start = values.branch_start;
+        self.stiffness = values.stiffness;
+
+        // Apply branch density multiplier
+        self.branch_density *= values.branch_density_mult;
+
+        // Branch direction bias is stored but not directly applied here
+        // It would be used during branch generation if implemented
+        // For now, we can approximate it with branch_flatness and twist
+        if values.branch_direction_bias.abs() > 0.1 {
+            // One-sided bias: increase flatness to make branches more directional
+            self.branch_flatness =
+                (self.branch_flatness + values.branch_direction_bias.abs() * 0.3).clamp(0.0, 1.0);
+        }
     }
 
     /// Reset all generation-related properties to their default values
