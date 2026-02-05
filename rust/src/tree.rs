@@ -1620,7 +1620,14 @@ impl PixyTree {
                     let leader = self.create_leader_branch();
                     all_branches.push(leader.clone());
                     if self.leader_has_branches {
-                        let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
+                        let sub_branches = generate_sub_branches(
+                            &leader,
+                            &config,
+                            &mut rng,
+                            0,
+                            self.gravity_strength,
+                            self.stiffness,
+                        );
                         all_branches.extend(sub_branches);
                     }
                 }
@@ -1642,7 +1649,14 @@ impl PixyTree {
                     all_branches.push(leader.clone());
 
                     if self.leader_has_branches {
-                        let sub_branches = generate_sub_branches(&leader, &config, &mut rng, 0);
+                        let sub_branches = generate_sub_branches(
+                            &leader,
+                            &config,
+                            &mut rng,
+                            0,
+                            self.gravity_strength,
+                            self.stiffness,
+                        );
                         all_branches.extend(sub_branches);
                     }
                 }
@@ -1655,13 +1669,34 @@ impl PixyTree {
                         stub_branches.push(stub);
                         all_branches.push(split1.clone());
                         all_branches.push(split2.clone());
-                        let sub1 = generate_sub_branches(&split1, &config, &mut rng, 0);
-                        let sub2 = generate_sub_branches(&split2, &config, &mut rng, 0);
+                        let sub1 = generate_sub_branches(
+                            &split1,
+                            &config,
+                            &mut rng,
+                            0,
+                            self.gravity_strength,
+                            self.stiffness,
+                        );
+                        let sub2 = generate_sub_branches(
+                            &split2,
+                            &config,
+                            &mut rng,
+                            0,
+                            self.gravity_strength,
+                            self.stiffness,
+                        );
                         all_branches.extend(sub1);
                         all_branches.extend(sub2);
                     } else {
                         all_branches.push(branch.clone());
-                        let sub_branches = generate_sub_branches(branch, &config, &mut rng, 0);
+                        let sub_branches = generate_sub_branches(
+                            branch,
+                            &config,
+                            &mut rng,
+                            0,
+                            self.gravity_strength,
+                            self.stiffness,
+                        );
                         all_branches.extend(sub_branches);
                     }
                 }
