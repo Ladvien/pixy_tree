@@ -596,23 +596,23 @@ impl GrowthPresetValues {
     /// Spreading: Oak-like with co-dominant branches
     pub fn spreading() -> Self {
         Self {
-            grow_threshold: 0.3,
-            cut_threshold: 0.1,
-            split_threshold: 0.6,
-            flower_threshold: 0.15,
-            apical_dominance: 0.5,
-            lateral_start: 0.2,
-            lateral_end: 0.8,
-            lateral_density: 2.0,
-            lateral_activation: 0.35,
-            lateral_angle: 50.0,
-            iterations: 5,
-            branch_length: 0.5,
-            gravitropism: 0.05,
-            randomness: 0.1,
-            gravity_strength: 0.1,
-            stiffness: 0.6,
-            split_angle: 60.0,
+            grow_threshold: 0.15,
+            cut_threshold: 0.02,
+            split_threshold: 0.4,
+            flower_threshold: 0.1,
+            apical_dominance: 0.3,
+            lateral_start: 0.1,
+            lateral_end: 0.95,
+            lateral_density: 4.0,
+            lateral_activation: 0.1,
+            lateral_angle: 60.0,
+            iterations: 10,
+            branch_length: 1.0,
+            gravitropism: 0.03,
+            randomness: 0.15,
+            gravity_strength: 0.12,
+            stiffness: 0.5,
+            split_angle: 45.0,
             phyllotaxis_angle: 137.5,
         }
     }
@@ -784,6 +784,7 @@ pub struct TreePresetValues {
     pub branch_flatness: f32,
     pub branch_angle_curve: f32,
     pub crown_angle_variation: f32,
+    pub branch_resolution: f32,
 
     // Twist
     pub trunk_twist: f32,
@@ -807,10 +808,6 @@ pub struct TreePresetValues {
     // Floor Avoidance
     pub floor_avoidance: bool,
     pub floor_level: f32,
-
-    // Branch Collar
-    pub branch_collar_enabled: bool,
-    pub branch_collar_length: f32,
 
     // Crown
     pub crown_shape: CrownShape,
@@ -885,63 +882,63 @@ impl TreePresetValues {
     /// Oak: Wide spreading branches, medium height, spherical crown
     pub fn oak() -> Self {
         Self {
-            trunk_height: 8.0, // Updated: scaled from 18-25m reference
-            trunk_radius: 0.6,
+            trunk_height: 7.0,
+            trunk_radius: 0.8,
             radial_segments: 8,
-            height_segments: 4,
-            trunk_taper: 0.3,
+            height_segments: 6,
+            trunk_taper: 0.4,
             trunk_taper_curve: 0.5,
-            trunk_flare: 1.2,
-            trunk_randomness: 0.05,
+            trunk_flare: 1.15,
+            trunk_randomness: 0.06,
             root_flare_count: 5,
-            root_flare_spread: 0.6,
-            root_flare_height: 0.15,
+            root_flare_spread: 0.3,
+            root_flare_height: 0.08,
             trunk_termination: TrunkTermination::LeaderBranch,
-            leader_length: 0.1,
-            leader_taper: 0.15,
+            leader_length: 0.3,
+            leader_taper: 0.1,
             leader_has_branches: true,
             branch_start: 0.35,
-            branch_end: 0.85,
-            branch_density: 2.5, // Research suggests 2.5 for dense oak crown
-            branch_length: 0.8,  // Research suggests 0.8 for spreading branches
-            branch_angle: 55.0,
-            branch_radius_ratio: 0.45, // Research suggests 0.45 for thick oak branches
-            branch_taper: 0.7,
+            branch_end: 0.95,
+            branch_density: 3.5,
+            branch_length: 0.5, // Multiplier of trunk_height (0.5 * 7.0 = 3.5 units)
+            branch_angle: 55.0, // Wide spread for broad dome crown
+            branch_radius_ratio: 0.5,
+            branch_taper: 0.4,
             phyllotaxis_angle: 137.5,
-            branch_randomness: 0.25,
-            up_attraction: 0.15,
-            branch_recursion: 2,
-            sub_branch_count: 4, // Research suggests 4 for oak
-            sub_branch_scale: 0.55,
+            branch_randomness: 0.2,
+            up_attraction: 0.05,
+            branch_recursion: 0,
+            sub_branch_count: 0,
+            sub_branch_scale: 0.5,
             branch_length_variation: 0.2,
             sub_branch_position_bias: 0.2,
-            apical_dominance: 0.3,
-            branch_flatness: 0.3,
+            apical_dominance: 0.4,
+            branch_flatness: 0.2,
             branch_angle_curve: 0.0,
-            crown_angle_variation: -0.2, // Lower branches spread horizontally
-            trunk_twist: 15.0,
-            branch_twist: 10.0,
-            gravity_strength: 0.35, // Updated: was 0.3, research suggests 0.35
-            stiffness: 0.6,
-            break_chance: 0.05,
+            crown_angle_variation: -0.1,
+            branch_resolution: 1.0,
+            trunk_twist: 10.0,
+            branch_twist: 8.0,
+            gravity_strength: 0.15,
+            stiffness: 0.7,
+            break_chance: 0.03,
             split_enabled: true,
-            split_probability: 0.65, // Updated: research suggests 0.65 for oak
-            split_angle: 30.0,
+            split_probability: 0.7,
+            split_angle: 35.0,
             split_position: 0.5,
-            split_radius_threshold: 0.1,
+            split_radius_threshold: 0.08,
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical,
-            crown_influence: 0.9,
+            crown_influence: 0.85,
             crown_base_size: 0.0,
             crown_height: -1.0,
             trunk_color: Color::from_rgb(0.365, 0.227, 0.102), // #5D3A1A Dark Brown
             foliage_color: Color::from_rgb(0.176, 0.314, 0.086), // #2D5016 Dark Green
             foliage: Some(FoliagePresetValues::oak()),
-            growth: Some(GrowthPresetValues::spreading()), // Oak: co-dominant branches, moderate droop
+            growth: None, // Use procedural branches for better visual quality
         }
     }
 
@@ -982,6 +979,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.3,
             crown_angle_variation: 0.3, // Lower branches steeper, upper droopy
+            branch_resolution: 2.5,
             trunk_twist: 0.0,
             branch_twist: 5.0,
             gravity_strength: 0.05,
@@ -995,8 +993,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -1045,6 +1042,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: -0.4,
             crown_angle_variation: -0.3, // Strong horizontal spread at bottom
+            branch_resolution: 4.0,
             trunk_twist: 10.0,
             branch_twist: 15.0,
             gravity_strength: 0.9, // Research suggests 0.9 for weeping effect
@@ -1058,8 +1056,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -1108,6 +1105,7 @@ impl TreePresetValues {
             branch_flatness: 0.1,
             branch_angle_curve: 0.2,
             crown_angle_variation: 0.1, // Slight vertical bias at bottom
+            branch_resolution: 3.0,
             trunk_twist: 5.0,
             branch_twist: 8.0,
             gravity_strength: 0.4, // Updated: research suggests 0.4 for pendulous tips
@@ -1121,8 +1119,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::TaperedCylindrical,
             crown_influence: 0.7,
             crown_base_size: 0.0,
@@ -1171,6 +1168,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0, // All branches same angle
+            branch_resolution: 2.0,
             trunk_twist: 0.0,
             branch_twist: 0.0,
             gravity_strength: 0.15,
@@ -1184,8 +1182,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Cylindrical,
             crown_influence: 0.5,
             crown_base_size: 0.0,
@@ -1234,6 +1231,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.5,
             crown_angle_variation: 0.4, // Strong vertical bias at bottom
+            branch_resolution: 3.0,
             trunk_twist: 5.0,
             branch_twist: 3.0,
             gravity_strength: 0.0,
@@ -1247,8 +1245,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Flame,
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -1297,6 +1294,7 @@ impl TreePresetValues {
             branch_flatness: 0.4,
             branch_angle_curve: -0.2,
             crown_angle_variation: -0.1, // Slight horizontal spread
+            branch_resolution: 4.0,
             trunk_twist: 30.0,
             branch_twist: 20.0,
             gravity_strength: 0.15,
@@ -1310,8 +1308,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.6,
             crown_base_size: 0.0,
@@ -1360,6 +1357,7 @@ impl TreePresetValues {
             branch_flatness: 0.25,
             branch_angle_curve: 0.0,
             crown_angle_variation: -0.15,
+            branch_resolution: 3.0,
             trunk_twist: 10.0,
             branch_twist: 8.0,
             gravity_strength: 0.25,
@@ -1373,8 +1371,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.85,
             crown_base_size: 0.0,
@@ -1423,6 +1420,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.35,
             crown_angle_variation: 0.35,
+            branch_resolution: 2.5,
             trunk_twist: 0.0,
             branch_twist: 3.0,
             gravity_strength: 0.3, // Updated: older branches droop
@@ -1436,8 +1434,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -1486,6 +1483,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.4,
             crown_angle_variation: 0.3,
+            branch_resolution: 3.0,
             trunk_twist: 0.0,
             branch_twist: 2.0,
             gravity_strength: 0.0,
@@ -1499,8 +1497,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Flame,
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -1549,6 +1546,7 @@ impl TreePresetValues {
             branch_flatness: 0.3,
             branch_angle_curve: -0.2,
             crown_angle_variation: -0.2,
+            branch_resolution: 2.0,
             trunk_twist: 5.0,
             branch_twist: 12.0,
             gravity_strength: 0.15,
@@ -1562,8 +1560,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.8,
+
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.7,
             crown_base_size: 0.0,
@@ -1612,6 +1609,7 @@ impl TreePresetValues {
             branch_flatness: 0.15,
             branch_angle_curve: 0.1,
             crown_angle_variation: 0.0,
+            branch_resolution: 3.0,
             trunk_twist: 8.0,
             branch_twist: 5.0,
             gravity_strength: 0.1,
@@ -1625,8 +1623,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.6,
+
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.6,
             crown_base_size: 0.0,
@@ -1675,6 +1672,7 @@ impl TreePresetValues {
             branch_flatness: 0.65, // Layered horizontal branches
             branch_angle_curve: -0.3,
             crown_angle_variation: -0.25,
+            branch_resolution: 3.0,
             trunk_twist: 15.0,
             branch_twist: 12.0,
             gravity_strength: 0.2,
@@ -1688,8 +1686,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.4,
+
             crown_shape: CrownShape::Spreading,
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -1738,6 +1735,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 3.0,
             trunk_twist: 40.0, // Twisted trunk
             branch_twist: 25.0,
             gravity_strength: 0.4, // Increased from 0.25 - skeletal hanging appearance
@@ -1751,8 +1749,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: false, // Branches can touch ground
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.6,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.4,
             crown_base_size: 0.0,
@@ -1801,6 +1798,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.25,
             crown_angle_variation: 0.2,
+            branch_resolution: 3.0,
             trunk_twist: 0.0,
             branch_twist: 3.0,
             gravity_strength: 0.15,
@@ -1814,8 +1812,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 0.9,
             crown_base_size: 0.0,
@@ -1864,6 +1861,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: -0.6, // Branches arch outward
             crown_angle_variation: -0.3,
+            branch_resolution: 3.0,
             trunk_twist: 8.0,
             branch_twist: 10.0,
             gravity_strength: 0.2,
@@ -1877,8 +1875,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Hemispherical,
             crown_influence: 0.85,
             crown_base_size: 0.0,
@@ -1927,6 +1924,7 @@ impl TreePresetValues {
             branch_flatness: 0.5,   // Horizontal spray effect
             branch_angle_curve: 0.4,
             crown_angle_variation: 0.35,
+            branch_resolution: 2.5,
             trunk_twist: 0.0,
             branch_twist: 3.0,
             gravity_strength: 0.05,
@@ -1940,8 +1938,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -1990,6 +1987,7 @@ impl TreePresetValues {
             branch_flatness: 0.65, // Flat spray effect
             branch_angle_curve: 0.2,
             crown_angle_variation: 0.2,
+            branch_resolution: 3.0,
             trunk_twist: 5.0,
             branch_twist: 5.0,
             gravity_strength: 0.1,
@@ -2003,8 +2001,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.6,
+
             crown_shape: CrownShape::Cylindrical,
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -2053,6 +2050,7 @@ impl TreePresetValues {
             branch_flatness: 0.15,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 3.0,
             trunk_twist: 20.0,
             branch_twist: 15.0,
             gravity_strength: 0.1,
@@ -2066,8 +2064,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.4,
+
             crown_shape: CrownShape::Hemispherical, // Irregular crown
             crown_influence: 0.5,
             crown_base_size: 0.0,
@@ -2116,6 +2113,7 @@ impl TreePresetValues {
             branch_flatness: 0.3,
             branch_angle_curve: -0.15,
             crown_angle_variation: -0.15,
+            branch_resolution: 3.0,
             trunk_twist: 50.0, // High twist for gnarled appearance
             branch_twist: 20.0,
             gravity_strength: 0.2,
@@ -2129,8 +2127,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.7,
             crown_base_size: 0.0,
@@ -2183,6 +2180,7 @@ impl TreePresetValues {
             branch_flatness: 0.35, // Horizontal layered appearance
             branch_angle_curve: -0.2,
             crown_angle_variation: -0.2,
+            branch_resolution: 3.0,
             trunk_twist: 12.0,
             branch_twist: 8.0,
             gravity_strength: 0.18,
@@ -2196,8 +2194,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.4,
+
             crown_shape: CrownShape::Spreading,
             crown_influence: 0.85,
             crown_base_size: 0.0,
@@ -2246,6 +2243,7 @@ impl TreePresetValues {
             branch_flatness: 0.9,  // Extreme horizontal spread
             branch_angle_curve: -0.1,
             crown_angle_variation: -0.1,
+            branch_resolution: 3.0,
             trunk_twist: 8.0,
             branch_twist: 5.0,
             gravity_strength: 0.12,
@@ -2259,8 +2257,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Umbrella, // Flat-topped
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -2309,6 +2306,7 @@ impl TreePresetValues {
             branch_flatness: 0.25,
             branch_angle_curve: 0.0,
             crown_angle_variation: -0.15,
+            branch_resolution: 3.0,
             trunk_twist: 5.0,
             branch_twist: 6.0,
             gravity_strength: 0.22,
@@ -2322,8 +2320,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical, // Dense dome
             crown_influence: 0.95,
             crown_base_size: 0.0,
@@ -2372,6 +2369,7 @@ impl TreePresetValues {
             branch_flatness: 0.15,
             branch_angle_curve: 0.1,
             crown_angle_variation: 0.1,
+            branch_resolution: 3.0,
             trunk_twist: 3.0,
             branch_twist: 5.0,
             gravity_strength: 0.1,
@@ -2385,8 +2383,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.4,
+
             crown_shape: CrownShape::Conical, // Young ginkgo - matures to spreading
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -2435,6 +2432,7 @@ impl TreePresetValues {
             branch_flatness: 0.3,
             branch_angle_curve: -0.4,
             crown_angle_variation: -0.3,
+            branch_resolution: 4.0,
             trunk_twist: 10.0,
             branch_twist: 12.0,
             gravity_strength: 0.75, // Strong weeping
@@ -2448,8 +2446,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.4,
+
             crown_shape: CrownShape::Hemispherical, // Umbrella-like weeping form
             crown_influence: 0.85,
             crown_base_size: 0.0,
@@ -2502,6 +2499,7 @@ impl TreePresetValues {
             branch_flatness: 0.25,
             branch_angle_curve: -0.1,
             crown_angle_variation: -0.15,
+            branch_resolution: 2.0,
             trunk_twist: 20.0,
             branch_twist: 15.0,
             gravity_strength: 0.25,
@@ -2515,8 +2513,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 2.0,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.85,
             crown_base_size: 0.0,
@@ -2565,6 +2562,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 2.0,
             trunk_twist: 0.0, // No twist
             branch_twist: 0.0,
             gravity_strength: 0.0, // No gravity
@@ -2578,8 +2576,6 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: false,
             floor_level: 0.0,
-            branch_collar_enabled: false, // No organic collars
-            branch_collar_length: 1.0,
             crown_shape: CrownShape::Conical,
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -2628,6 +2624,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 3.0,
             trunk_twist: 65.0, // Extreme twist
             branch_twist: 35.0,
             gravity_strength: 0.35,
@@ -2641,8 +2638,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: false, // Branches can touch ground
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.6,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.4,
             crown_base_size: 0.0,
@@ -2691,6 +2687,7 @@ impl TreePresetValues {
             branch_flatness: 0.25,
             branch_angle_curve: 0.0,
             crown_angle_variation: -0.15,
+            branch_resolution: 3.0,
             trunk_twist: 12.0,
             branch_twist: 8.0,
             gravity_strength: 0.2,
@@ -2704,8 +2701,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.9,
             crown_base_size: 0.0,
@@ -2758,6 +2754,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.35,
             crown_angle_variation: 0.3,
+            branch_resolution: 2.5,
             trunk_twist: 0.0,
             branch_twist: 3.0,
             gravity_strength: 0.05,
@@ -2771,8 +2768,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 1.0,
             crown_base_size: 0.0,
@@ -2821,6 +2817,7 @@ impl TreePresetValues {
             branch_flatness: 0.6, // Tiered flat sprays
             branch_angle_curve: 0.3,
             crown_angle_variation: 0.25,
+            branch_resolution: 2.5,
             trunk_twist: 0.0,
             branch_twist: 4.0,
             gravity_strength: 0.1,
@@ -2834,8 +2831,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 0.95,
             crown_base_size: 0.0,
@@ -2884,6 +2880,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.25,
             crown_angle_variation: 0.2,
+            branch_resolution: 2.5,
             trunk_twist: 0.0,
             branch_twist: 5.0,
             gravity_strength: 0.08,
@@ -2897,8 +2894,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Conical,
             crown_influence: 0.85,
             crown_base_size: 0.0,
@@ -2947,6 +2943,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 4.0,
             trunk_twist: 90.0, // Extreme twist for ancient look
             branch_twist: 30.0,
             gravity_strength: 0.15,
@@ -2960,8 +2957,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.5,
             crown_base_size: 0.0,
@@ -3010,6 +3006,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: -0.1,
             crown_angle_variation: -0.15,
+            branch_resolution: 3.0,
             trunk_twist: 5.0,
             branch_twist: 8.0,
             gravity_strength: 0.2,
@@ -3023,8 +3020,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical, // Open rounded crown
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -3073,6 +3069,7 @@ impl TreePresetValues {
             branch_flatness: 0.25,
             branch_angle_curve: 0.0,
             crown_angle_variation: -0.1,
+            branch_resolution: 3.0,
             trunk_twist: 5.0,
             branch_twist: 6.0,
             gravity_strength: 0.2,
@@ -3086,8 +3083,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spherical, // Dense dome
             crown_influence: 0.9,
             crown_base_size: 0.0,
@@ -3136,6 +3132,7 @@ impl TreePresetValues {
             branch_flatness: 0.2,
             branch_angle_curve: -0.15,
             crown_angle_variation: -0.2,
+            branch_resolution: 3.0,
             trunk_twist: 10.0,
             branch_twist: 12.0,
             gravity_strength: 0.25,
@@ -3149,8 +3146,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.6,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.75,
             crown_base_size: 0.0,
@@ -3199,6 +3195,7 @@ impl TreePresetValues {
             branch_flatness: 0.1,
             branch_angle_curve: 0.15,
             crown_angle_variation: 0.1,
+            branch_resolution: 3.0,
             trunk_twist: 3.0,
             branch_twist: 5.0,
             gravity_strength: 0.1,
@@ -3212,8 +3209,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.4,
+
             crown_shape: CrownShape::TaperedCylindrical,
             crown_influence: 0.8,
             crown_base_size: 0.0,
@@ -3262,6 +3258,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 2.0,
             trunk_twist: 0.0,
             branch_twist: 0.0,
             gravity_strength: 0.1,
@@ -3275,8 +3272,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: false,
-            branch_collar_length: 1.0,
+
             crown_shape: CrownShape::Cylindrical,
             crown_influence: 0.5,
             crown_base_size: 0.0,
@@ -3325,6 +3321,7 @@ impl TreePresetValues {
             branch_flatness: 0.0,
             branch_angle_curve: 0.0,
             crown_angle_variation: 0.0,
+            branch_resolution: 2.0,
             trunk_twist: 0.0,
             branch_twist: 0.0,
             gravity_strength: 0.2,
@@ -3338,8 +3335,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: false,
-            branch_collar_length: 1.0,
+
             crown_shape: CrownShape::Spherical,
             crown_influence: 0.6,
             crown_base_size: 0.0,
@@ -3388,6 +3384,7 @@ impl TreePresetValues {
             branch_flatness: 0.1,
             branch_angle_curve: -0.25,
             crown_angle_variation: -0.2,
+            branch_resolution: 3.0,
             trunk_twist: 8.0,
             branch_twist: 10.0,
             gravity_strength: 0.4, // Strong droop for hanging leaves
@@ -3401,8 +3398,7 @@ impl TreePresetValues {
             split_radius_multiplier: 0.9,
             floor_avoidance: true,
             floor_level: 0.0,
-            branch_collar_enabled: true,
-            branch_collar_length: 1.5,
+
             crown_shape: CrownShape::Spreading,
             crown_influence: 0.75,
             crown_base_size: 0.0,
@@ -3838,7 +3834,6 @@ mod tests {
         assert_eq!(crystal.trunk_randomness, 0.0); // No randomness
         assert_eq!(crystal.branch_randomness, 0.0); // Pure geometry
         assert_eq!(crystal.gravity_strength, 0.0); // No gravity
-        assert!(!crystal.branch_collar_enabled); // No organic collars
         assert!(crystal.foliage.is_none()); // No foliage
     }
 

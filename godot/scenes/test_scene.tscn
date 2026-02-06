@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://c8q2xvn7y5r4m"]
 
 [ext_resource type="Script" uid="uid://df1p3vsrjvq0b" path="res://scripts/orbit_camera.gd" id="1_orbit"]
+[ext_resource type="Script" path="res://scripts/editor_junction_capture.gd" id="2_capture"]
 
 [sub_resource type="Sky" id="Sky_1"]
 
@@ -71,5 +72,10 @@ shadow_enabled = true
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=117163547]
 environment = SubResource("Environment_1")
+
+[node name="JunctionCapture" type="Node" parent="."]
+script = ExtResource("2_capture")
+pixy_tree = NodePath("../PixyTree")
+camera = NodePath("../Camera3D")
 
 [connection signal="tree_generated" from="PixyTree" to="Camera3D" method="frame_tree"]

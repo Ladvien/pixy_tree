@@ -53,7 +53,7 @@ impl MeshData {
 }
 
 /// A single branch segment to be meshed
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BranchSegment {
     pub start: Vector3,
     pub direction: Vector3,
@@ -203,7 +203,7 @@ pub struct BranchConfig {
     pub crown_base_size: f32,
     /// Crown height override (-1.0 = auto, use trunk_height)
     pub crown_height: f32,
-    /// Branch resolution: segments per unit length (0 = legacy single-segment)
+    /// Branch resolution: segments per unit length
     pub resolution: f32,
     /// Property wrappers for height-dependent parameters (AG5)
     pub length_property: BranchProperty,
@@ -281,38 +281,6 @@ fn get_perpendicular(dir: Vector3) -> Vector3 {
         Vector3::UP
     };
     tmp.cross(dir).normalized()
-}
-
-/// Calculate root flare bulge at a given height and azimuthal angle.
-/// Returns additional radius beyond the base trunk radius.
-///
-/// # Arguments
-/// * `height` - Height on trunk in world units
-/// * `angle` - Azimuthal angle in radians around trunk
-/// * `config` - Branch config containing root flare parameters
-///
-/// # Returns
-/// Additional radius due to root flare bulge (0.0 if outside root zone)
-pub fn root_flare_bulge_at(height: f32, angle: f32, config: &BranchConfig) -> f32 {
-    let root_height = config.root_flare_height * config.trunk_height;
-    let has_root_flares = config.root_flare_count > 0 && config.root_flare_spread > 0.0;
-
-    if !has_root_flares || height >= root_height {
-        return 0.0;
-    }
-
-    // Blend factor: 1.0 at base, 0.0 at root_height
-    let root_blend = 1.0 - (height / root_height);
-
-    // Base radius at trunk base (with flare)
-    let base_radius = config.trunk_radius * config.trunk_flare;
-
-    // Sinusoidal bulge based on angle - same formula as trunk mesh generation
-    let bulge_angle = angle * config.root_flare_count as f32;
-    // Use squared cosine for sharper, more defined root ridges
-    let raw_bulge = (bulge_angle.cos() * 0.5 + 0.5).powi(2);
-
-    raw_bulge * config.root_flare_spread * base_radius * root_blend
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -545,393 +513,6 @@ pub fn check_branch_collision(
     false
 }
 
-/// Generate split branches from a parent branch (Y-junction)
-/// Returns the stub segment (up to split point) and two diverging branches
-pub fn generate_split_branches(
-    parent: &BranchSegment,
-    config: &BranchConfig,
-    rng: &mut SeededRng,
-) -> Option<(BranchSegment, BranchSegment, BranchSegment)> {
-    if !config.split_enabled || rng.next_f32() > config.split_probability {
-        return None;
-    }
-
-    // Only allow thicker branches to split
-    if parent.base_radius < config.split_radius_threshold {
-        return None;
-    }
-
-    // Calculate split point along the parent branch
-    let split_t = config.split_position;
-    let split_point = parent.start + parent.direction * parent.length * split_t;
-
-    // Remaining length after split
-    let remaining_length = parent.length * (1.0 - split_t);
-
-    // Radius at split point (tapered)
-    let split_radius = lerp(parent.base_radius, parent.tip_radius, split_t);
-
-    // Create the stub segment (from start to split point)
-    let stub = BranchSegment {
-        start: parent.start,
-        direction: parent.direction,
-        length: parent.length * split_t,
-        base_radius: parent.base_radius,
-        tip_radius: split_radius,
-        depth: parent.depth,
-        is_terminal: false, // Never terminal - it has children
-        height_ratio: parent.height_ratio,
-        subtree_weight: parent.length * split_t,
-    };
-
-    // Calculate divergent directions for the two split branches
-    let half_angle = (config.split_angle / 2.0).to_radians();
-
-    // Get perpendicular basis for spreading
-    let perp = get_perpendicular(parent.direction);
-
-    // Random rotation around the parent direction for variety
-    let rotation = rng.range(0.0, TAU);
-    let cos_rot = rotation.cos();
-    let sin_rot = rotation.sin();
-    let perp2 = parent.direction.cross(perp);
-    let rotated_perp = perp * cos_rot + perp2 * sin_rot;
-
-    // Branch 1: Deflect in one direction
-    let dir1 = (parent.direction * half_angle.cos() + rotated_perp * half_angle.sin()).normalized();
-
-    // Branch 2: Deflect in opposite direction
-    let dir2 = (parent.direction * half_angle.cos() - rotated_perp * half_angle.sin()).normalized();
-
-    // M5: Use configurable split radius multiplier (C++ default 0.9)
-    let split_mult = config.split_radius_multiplier;
-    let branch_tip_radius = parent.tip_radius * split_mult;
-
-    let branch1_length = remaining_length * rng.range(0.9, 1.1);
-    let branch1 = BranchSegment {
-        start: split_point,
-        direction: dir1,
-        length: branch1_length,
-        base_radius: split_radius * split_mult,
-        tip_radius: branch_tip_radius * split_mult,
-        depth: parent.depth,
-        is_terminal: parent.is_terminal,
-        height_ratio: parent.height_ratio,
-        subtree_weight: branch1_length,
-    };
-
-    // Secondary branch gets slightly smaller (split_mult - 0.2)
-    let secondary_mult = (split_mult - 0.2).max(0.3);
-    let branch2_length = remaining_length * rng.range(0.9, 1.1);
-    let branch2 = BranchSegment {
-        start: split_point,
-        direction: dir2,
-        length: branch2_length,
-        base_radius: split_radius * secondary_mult,
-        tip_radius: branch_tip_radius * secondary_mult,
-        depth: parent.depth,
-        is_terminal: parent.is_terminal,
-        height_ratio: parent.height_ratio,
-        subtree_weight: branch2_length,
-    };
-
-    Some((stub, branch1, branch2))
-}
-
-/// Generate primary branch origins along the trunk using phyllotaxis spiral
-pub fn generate_branch_origins(config: &BranchConfig, rng: &mut SeededRng) -> Vec<BranchSegment> {
-    let mut branches = Vec::new();
-    let mut current_angle = 0.0f32;
-    // A5 fix: Maintain persistent tangent vector across branches (C++ pattern).
-    // Initialize from orthogonal to initial trunk direction (UP for straight trunk).
-    let mut tangent = get_perpendicular(Vector3::UP);
-
-    // Calculate branch zone with crown_base_size and crown_height overrides
-    let effective_height = if config.crown_height < 0.0 {
-        config.trunk_height
-    } else {
-        config.crown_height
-    };
-    // B9 fix: Crown zone is measured from crown_base_size to top of effective_height
-    // Branch zone may be a subset of the crown zone
-    let crown_start = effective_height * config.crown_base_size;
-    let crown_zone_height = effective_height * (1.0 - config.crown_base_size);
-    let start_height = (config.trunk_height * config.branch_start).max(crown_start);
-    let end_height = config.trunk_height * config.branch_end;
-    let zone_length = end_height - start_height;
-
-    if zone_length <= 0.0 {
-        return branches;
-    }
-
-    // Spacing from density
-    let spacing = 1.0 / (config.branch_density + 0.001);
-    let branch_count = (zone_length / spacing).floor() as i32;
-
-    for i in 0..branch_count {
-        // Height with small random offset within spacing
-        let base_height = start_height + spacing * i as f32;
-        let height = base_height + rng.range(0.0, spacing * 0.5);
-
-        if height > end_height {
-            break;
-        }
-
-        // Check for break_chance (branch terminates/breaks off early)
-        if config.break_chance > 0.0 && rng.next_f32() < config.break_chance {
-            continue; // Skip this branch (it "broke off")
-        }
-
-        // A5 fix: Accumulate phyllotaxis angle for branch start position on trunk surface.
-        // Jitter is applied to the tangent rotation below (matching C++ which applies it there).
-        current_angle += config.phyllotaxis_angle;
-        let angle_rad = current_angle.to_radians();
-
-        // Trunk radius at this height (using proper taper parameters)
-        let t = height / config.trunk_height;
-        let taper_factor = t.powf(config.trunk_taper_curve);
-        let base_radius = config.trunk_radius * config.trunk_flare;
-        let tip_radius = config.trunk_radius * config.trunk_taper;
-        let nominal_trunk_r = lerp(base_radius, tip_radius, taper_factor);
-
-        // Issue A: Add root flare bulge to trunk radius at this angle
-        // This ensures branches in the root zone attach to the visually bulged surface
-        let root_bulge = root_flare_bulge_at(height, angle_rad, config);
-        let trunk_r = nominal_trunk_r + root_bulge;
-
-        // Calculate trunk wobble offset at this height (must match create_trunk_mesh_data)
-        let seed_f = config.seed as f32;
-        let wobble_x = if config.trunk_randomness > 0.0 {
-            (t * std::f32::consts::PI + seed_f * 0.1).sin()
-                * config.trunk_randomness
-                * t
-                * config.trunk_height
-                * 0.3
-        } else {
-            0.0
-        };
-        let wobble_z = if config.trunk_randomness > 0.0 {
-            (t * std::f32::consts::E + seed_f * 0.2).cos()
-                * config.trunk_randomness
-                * t
-                * config.trunk_height
-                * 0.3
-        } else {
-            0.0
-        };
-
-        // Apply trunk twist rotation based on height (must match create_trunk_mesh_data)
-        // The trunk mesh applies twist rotation around Y axis, so branch origins must too
-        let twist_angle = t * config.trunk_twist.to_radians();
-        let cos_twist = twist_angle.cos();
-        let sin_twist = twist_angle.sin();
-
-        // Calculate untwisted position on trunk surface
-        let untwisted_x = angle_rad.cos() * trunk_r;
-        let untwisted_z = angle_rad.sin() * trunk_r;
-
-        // Apply twist rotation around Y axis, then add wobble offset
-        let start = Vector3::new(
-            untwisted_x * cos_twist - untwisted_z * sin_twist + wobble_x,
-            height,
-            untwisted_x * sin_twist + untwisted_z * cos_twist + wobble_z,
-        );
-
-        // Direction: lerp from up to outward based on branch_angle
-        // B9 fix: position_ratio uses crown zone (crown_start to effective_height), not branch zone
-        // This ensures crown shape is correctly applied relative to the crown envelope
-        let position_ratio = if crown_zone_height > 0.0 {
-            ((height - crown_start) / crown_zone_height).clamp(0.0, 1.0)
-        } else {
-            ((height - start_height) / zone_length).clamp(0.0, 1.0)
-        };
-        // C2 fix: distribution_factor = position within branch distribution zone
-        // C++ uses factor = (current_length - absolute_start) / (absolute_end - absolute_start)
-        // for property evaluation (length, radius, angle curves)
-        let distribution_factor =
-            ((height - start_height) / zone_length.max(0.001)).clamp(0.0, 1.0);
-        // crown_ratio: 1→0 from bottom→top (for crown shape and crown angle variation)
-        let crown_ratio = 1.0 - position_ratio;
-
-        // Crown angle variation: C++ formula using Conical shape_ratio
-        // shape_ratio = Conical.get_length_multiplier(crown_ratio)
-        // angle_offset = crown_angle_variation * (1.0 - 2.0 * shape_ratio)
-        let shape_ratio = CrownShape::Conical.get_length_multiplier(crown_ratio);
-        let angle_offset = config.crown_angle_variation * (1.0 - 2.0 * shape_ratio);
-        let effective_angle = (config.branch_angle + angle_offset).clamp(0.0, 180.0);
-
-        // Branch direction relative to trunk direction (not global UP)
-        // Compute trunk direction at this height (accounting for wobble)
-        let trunk_direction = {
-            // Approximate local trunk direction from wobble derivative
-            let dt = 0.01f32;
-            let t2 = (t + dt).min(1.0);
-            let seed_f = config.seed as f32;
-            let wx1 = if config.trunk_randomness > 0.0 {
-                (t * std::f32::consts::PI + seed_f * 0.1).sin()
-                    * config.trunk_randomness
-                    * t
-                    * config.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
-            let wz1 = if config.trunk_randomness > 0.0 {
-                (t * std::f32::consts::E + seed_f * 0.2).cos()
-                    * config.trunk_randomness
-                    * t
-                    * config.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
-            let wx2 = if config.trunk_randomness > 0.0 {
-                (t2 * std::f32::consts::PI + seed_f * 0.1).sin()
-                    * config.trunk_randomness
-                    * t2
-                    * config.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
-            let wz2 = if config.trunk_randomness > 0.0 {
-                (t2 * std::f32::consts::E + seed_f * 0.2).cos()
-                    * config.trunk_randomness
-                    * t2
-                    * config.trunk_height
-                    * 0.3
-            } else {
-                0.0
-            };
-            let delta_height = dt * config.trunk_height;
-            Vector3::new(wx2 - wx1, delta_height, wz2 - wz1).normalized()
-        };
-
-        // A5 fix: C++ rotates the persistent tangent around parent direction each iteration
-        // then projects back onto the perpendicular plane (BranchFunction.cpp:279,306-308)
-        let phyllotaxis_rad = (config.phyllotaxis_angle + rng.range(-1.0, 1.0)).to_radians();
-        tangent = rotate_around_axis(tangent, trunk_direction, phyllotaxis_rad);
-        // Project tangent onto plane perpendicular to trunk_direction
-        let dot = tangent.x * trunk_direction.x
-            + tangent.y * trunk_direction.y
-            + tangent.z * trunk_direction.z;
-        tangent = Vector3::new(
-            tangent.x - dot * trunk_direction.x,
-            tangent.y - dot * trunk_direction.y,
-            tangent.z - dot * trunk_direction.z,
-        );
-        let tangent_len = tangent.length();
-        if tangent_len > 0.001 {
-            tangent /= tangent_len;
-        }
-
-        // Direction = lerp(trunk_direction, tangent, effective_angle / 90.0)
-        let base_dir = lerp_vec3(trunk_direction, tangent, effective_angle / 90.0);
-
-        // H1 fix: flatness applied inside random_vec before normalization (C++ pattern)
-        let random_offset = random_vec(rng, config.branch_flatness) * config.branch_randomness;
-
-        // Add randomness + up_attraction
-        let up_offset = Vector3::UP * config.up_attraction;
-        let direction = (base_dir + random_offset + up_offset).normalized();
-
-        // C2 fix: property curves use distribution_factor (position within branch zone)
-        let radius_curve_mult = if (config.branch_radius_curve_end - 1.0).abs() > 0.001 {
-            let factor = distribution_factor.powf(config.branch_radius_curve_power);
-            1.0 + (config.branch_radius_curve_end - 1.0) * factor
-        } else {
-            1.0
-        };
-        let base_radius = trunk_r * config.branch_radius_ratio * radius_curve_mult;
-        let tip_radius = base_radius * (1.0 - config.branch_taper);
-
-        // Apply crown shape envelope (uses crown_ratio: 1→0, inverted for shape)
-        let shape_mult = config.crown_shape.get_length_multiplier(crown_ratio);
-        let final_mult = lerp(1.0, shape_mult, config.crown_influence);
-
-        // C2 fix: length curve uses distribution_factor
-        let length_curve_mult = if (config.branch_length_curve_end - 1.0).abs() > 0.001 {
-            let factor = distribution_factor.powf(config.branch_length_curve_power);
-            1.0 + (config.branch_length_curve_end - 1.0) * factor
-        } else {
-            1.0
-        };
-
-        // Apply length variation: higher variation = wider range
-        let variation_min = 1.0 - config.branch_length_variation;
-
-        // Apply apical dominance: higher branches are suppressed (shorter)
-        // Formula: length_mult = 1.0 - (apical_dominance * position_ratio * 0.5)
-        let dominance_mult = 1.0 - (config.apical_dominance * position_ratio * 0.5);
-
-        let length = config.trunk_height
-            * config.branch_length
-            * final_mult
-            * dominance_mult
-            * length_curve_mult
-            * rng.range(variation_min, 1.0);
-
-        // Apply angle curve based on height (adjust direction)
-        let direction = if config.branch_angle_curve.abs() > 0.001 {
-            // Positive curve = upper branches reach upward, negative = droop at top
-            let angle_adjustment =
-                config.branch_angle_curve * distribution_factor * 30.0f32.to_radians();
-            Vector3::new(
-                direction.x,
-                direction.y + angle_adjustment.sin(),
-                direction.z,
-            )
-            .normalized()
-        } else {
-            direction
-        };
-
-        // B15 fix: C++ floor avoidance gradually deflects downward component
-        // direction.z -= direction.z * 2 / (2 + position.z) when direction.z < 0
-        // Terminates if end position would go below floor
-        let (direction, length, is_terminal) = if config.floor_avoidance {
-            let mut dir = direction;
-            if dir.y < 0.0 {
-                // Gradually reduce downward component based on height above floor
-                let height_above_floor = (start.y - config.floor_level).max(0.01);
-                dir.y -= dir.y * 2.0 / (2.0 + height_above_floor);
-                dir = dir.normalized();
-            }
-            // Check if branch end would be below floor
-            let end_y = start.y + dir.y * length;
-            if end_y < config.floor_level {
-                // Terminate this branch (C++ returns early)
-                continue;
-            }
-            (
-                dir,
-                length,
-                config.branch_recursion == 0 || config.sub_branch_count == 0,
-            )
-        } else {
-            (
-                direction,
-                length,
-                config.branch_recursion == 0 || config.sub_branch_count == 0,
-            )
-        };
-
-        branches.push(BranchSegment {
-            start,
-            direction,
-            length,
-            base_radius,
-            tip_radius,
-            depth: 0,
-            is_terminal,
-            height_ratio: position_ratio,
-            subtree_weight: length,
-        });
-    }
-
-    branches
-}
-
 /// Generate sub-branches recursively from a parent branch.
 ///
 /// Sub-branches are positioned along the gravity-curved path of the parent,
@@ -1145,8 +726,7 @@ fn rotate_around_axis(v: Vector3, axis: Vector3, angle: f32) -> Vector3 {
 
 /// Compute position and direction at parameter t along a gravity-curved branch.
 ///
-/// This matches the mesh generation logic in `generate_branch_mesh_with_resolution`,
-/// allowing sub-branches to be placed along the actual curved path rather than
+/// Allows sub-branches to be placed along the actual curved path rather than
 /// a straight line from start to end.
 ///
 /// # Arguments
@@ -1224,196 +804,6 @@ pub fn get_curved_position_at_t(
     (current_pos, current_dir)
 }
 
-/// Generate mesh data for a single branch segment with twist and gravity support.
-///
-/// Ring count is determined by `resolution` (segments per unit length).
-/// A value of 0.0 uses the legacy fixed ring count (2 or 6).
-pub fn generate_branch_mesh_with_config(
-    branch: &BranchSegment,
-    radial_segments: i32,
-    branch_twist: f32,
-    gravity_strength: f32,
-    stiffness: f32,
-) -> MeshData {
-    generate_branch_mesh_with_resolution(
-        branch,
-        radial_segments,
-        branch_twist,
-        gravity_strength,
-        stiffness,
-        0.0, // legacy: auto ring count
-    )
-}
-
-/// Generate mesh data for a single branch with configurable length resolution.
-///
-/// # Arguments
-/// * `resolution` - Rings per unit length (0.0 = use legacy auto-detect)
-pub fn generate_branch_mesh_with_resolution(
-    branch: &BranchSegment,
-    radial_segments: i32,
-    branch_twist: f32,
-    gravity_strength: f32,
-    stiffness: f32,
-    resolution: f32,
-) -> MeshData {
-    let mut mesh = MeshData::new();
-
-    let segments = radial_segments.max(3) as usize;
-
-    // Ring count: if resolution > 0, scale with branch length
-    let rings = if resolution > 0.0 {
-        let computed = (resolution * branch.length).round() as usize;
-        computed.clamp(2, 16) // At least 2 (base+tip), max 16
-    } else if branch_twist.abs() > 0.1 || gravity_strength > 0.01 {
-        6usize // More rings for curved branches
-    } else {
-        2usize // Simple branches need only base and tip
-    };
-
-    // Track cumulative position along the curved branch
-    let mut positions: Vec<Vector3> = Vec::with_capacity(rings);
-    let mut directions: Vec<Vector3> = Vec::with_capacity(rings);
-
-    // Pre-compute positions along the branch with torque-based gravity
-    let step_length = branch.length / (rings - 1) as f32;
-    let mut current_pos = branch.start;
-    let mut current_dir = branch.direction;
-    let mut deviation = 0.0f32;
-
-    for ring in 0..rings {
-        let t = ring as f32 / (rings - 1) as f32;
-        positions.push(current_pos);
-
-        // B12 fix: Use subtree_weight (recursive accumulation from pipe radius phase)
-        // Weight decreases linearly toward tip as we move along the branch
-        let weight_at_t = (1.0 - t) * branch.subtree_weight.max(0.01);
-
-        // Apply torque-based gravity bending with cumulative rotation
-        let (new_dir, new_deviation) = apply_gravity_torque(
-            current_dir,
-            gravity_strength,
-            stiffness,
-            weight_at_t,
-            deviation,
-            rings,
-            ring,
-        );
-        current_dir = new_dir;
-        deviation = new_deviation;
-        directions.push(current_dir);
-
-        if ring < rings - 1 {
-            current_pos += current_dir * step_length;
-        }
-    }
-
-    let end_pos = positions[rings - 1];
-    let end_dir = directions[rings - 1];
-
-    // Generate rings of vertices
-    for ring in 0..rings {
-        let t = ring as f32 / (rings - 1) as f32;
-        let pos = positions[ring];
-        let dir = directions[ring];
-        let radius = lerp(branch.base_radius, branch.tip_radius, t);
-        let v = t;
-
-        // Calculate twist angle for this ring
-        let twist_angle = t * branch_twist.to_radians();
-
-        // Build rotation basis from current direction
-        let right = get_perpendicular(dir);
-        let forward = dir.cross(right);
-
-        for seg in 0..=segments {
-            let base_angle = (seg as f32 / segments as f32) * TAU;
-            // Apply twist by rotating around the branch axis
-            let angle = base_angle + twist_angle;
-
-            let local_x = angle.cos() * radius;
-            let local_z = angle.sin() * radius;
-
-            // Transform to world space using our basis
-            let offset = right * local_x + forward * local_z;
-            let vertex = pos + offset;
-
-            // Normal points outward in the local frame (also twisted)
-            let normal = (right * angle.cos() + forward * angle.sin()).normalized();
-
-            mesh.vertices.push(vertex);
-            mesh.normals.push(normal);
-            mesh.uvs.push(Vector2::new(seg as f32 / segments as f32, v));
-        }
-    }
-
-    // Generate indices for cylinder sides
-    let verts_per_ring = segments + 1;
-    for ring in 0..(rings - 1) {
-        for seg in 0..segments {
-            let current = (ring * verts_per_ring + seg) as i32;
-            let next = (ring * verts_per_ring + seg + 1) as i32;
-            let above = ((ring + 1) * verts_per_ring + seg) as i32;
-            let above_next = ((ring + 1) * verts_per_ring + seg + 1) as i32;
-
-            // Two triangles per quad
-            mesh.indices.extend_from_slice(&[current, next, above]);
-            mesh.indices.extend_from_slice(&[next, above_next, above]);
-        }
-    }
-
-    // Issue D: Only generate tip cap for terminal branches (no sub-branches)
-    // Non-terminal branches have sub-branches that cover their tips
-    if branch.is_terminal {
-        // Build end basis for tip cap
-        let end_right = get_perpendicular(end_dir);
-        let end_forward = end_dir.cross(end_right);
-        let tip_twist_angle = branch_twist.to_radians();
-
-        // Add tip cap
-        let tip_center_idx = mesh.vertices.len() as i32;
-        mesh.vertices.push(end_pos);
-        mesh.normals.push(end_dir);
-        mesh.uvs.push(Vector2::new(0.5, 0.5));
-
-        // Tip ring vertices
-        for seg in 0..=segments {
-            let base_angle = (seg as f32 / segments as f32) * TAU;
-            let angle = base_angle + tip_twist_angle;
-            let local_x = angle.cos() * branch.tip_radius;
-            let local_z = angle.sin() * branch.tip_radius;
-
-            let offset = end_right * local_x + end_forward * local_z;
-            let vertex = end_pos + offset;
-
-            mesh.vertices.push(vertex);
-            mesh.normals.push(end_dir);
-            mesh.uvs.push(Vector2::new(
-                0.5 + base_angle.cos() * 0.5,
-                0.5 + base_angle.sin() * 0.5,
-            ));
-        }
-
-        // Tip cap triangles
-        let tip_ring_start = tip_center_idx + 1;
-        for seg in 0..segments {
-            let current = tip_ring_start + seg as i32;
-            let next = tip_ring_start + (seg + 1) as i32;
-            mesh.indices
-                .extend_from_slice(&[tip_center_idx, current, next]);
-        }
-    }
-
-    mesh
-}
-
-/// Generate mesh data for a single branch segment (tapered cylinder)
-/// Legacy version without twist/gravity - calls new version with defaults
-#[allow(dead_code)]
-pub fn generate_branch_mesh(branch: &BranchSegment, radial_segments: i32) -> MeshData {
-    generate_branch_mesh_with_config(branch, radial_segments, 0.0, 0.0, 0.5)
-}
-
 /// Calculate parent radius using the pipe model (Da Vinci's rule).
 /// The sum of cross-sectional areas of child branches equals the parent's area.
 ///
@@ -1461,7 +851,7 @@ pub fn apply_pipe_radius_model(
 
     // Build parent-child relationships based on position matching
     // For each branch, find which branch it connects to (parent)
-    let epsilon = 0.01; // Position matching tolerance
+    let epsilon = 0.01f32; // Position matching tolerance
 
     // Create a map of branch index to its children's indices
     let mut children_map: std::collections::HashMap<usize, Vec<usize>> =
@@ -1471,22 +861,60 @@ pub fn apply_pipe_radius_model(
         children_map.insert(i, Vec::new());
     }
 
-    // Find parent for each branch
+    // Spatial hash of parent endpoints for O(n) parent-child matching
+    let cell_size = 1.0f32;
+    let grid_key = |pos: Vector3| -> (i32, i32, i32) {
+        (
+            (pos.x / cell_size).floor() as i32,
+            (pos.y / cell_size).floor() as i32,
+            (pos.z / cell_size).floor() as i32,
+        )
+    };
+
+    // Insert each branch's endpoint into the spatial grid
+    let mut endpoint_grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (idx, branch) in branches.iter().enumerate() {
+        let end = branch.start + branch.direction * branch.length;
+        let key = grid_key(end);
+        endpoint_grid.entry(key).or_default().push(idx);
+    }
+
+    // Find parent for each branch using spatial lookup
     for (child_idx, child) in branches.iter().enumerate() {
-        for (parent_idx, parent) in branches.iter().enumerate() {
-            if parent_idx == child_idx {
-                continue;
+        let center = grid_key(child.start);
+        let mut found = false;
+        for dx in -1..=1 {
+            if found {
+                break;
             }
-
-            // Check if child starts near parent's endpoint
-            let parent_end = parent.start + parent.direction * parent.length;
-            let distance = (child.start - parent_end).length();
-
-            if distance < epsilon {
-                if let Some(children) = children_map.get_mut(&parent_idx) {
-                    children.push(child_idx);
+            for dy in -1..=1 {
+                if found {
+                    break;
                 }
-                break; // Each child has at most one parent
+                for dz in -1..=1 {
+                    if found {
+                        break;
+                    }
+                    let key = (center.0 + dx, center.1 + dy, center.2 + dz);
+                    if let Some(candidates) = endpoint_grid.get(&key) {
+                        for &parent_idx in candidates {
+                            if parent_idx == child_idx {
+                                continue;
+                            }
+                            let parent = &branches[parent_idx];
+                            let parent_end = parent.start + parent.direction * parent.length;
+                            let distance = (child.start - parent_end).length();
+                            if distance < epsilon {
+                                if let Some(children) = children_map.get_mut(&parent_idx) {
+                                    children.push(child_idx);
+                                }
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1543,142 +971,6 @@ pub fn apply_pipe_radius_model(
         branch.base_radius = branch.base_radius.max(min_radius);
         branch.tip_radius = branch.tip_radius.max(min_radius * 0.5);
     }
-}
-
-/// Generate a collar mesh that smoothly connects trunk surface to branch base.
-/// This creates a tapered transition that bridges the gap between
-/// the trunk surface and branch, eliminating visible seams.
-///
-/// # Arguments
-/// * `branch_start` - Branch attachment point (where branch mesh begins)
-/// * `branch_direction` - Branch growth direction (normalized)
-/// * `trunk_center` - Center of trunk at branch height (accounting for wobble)
-/// * `trunk_radius` - Trunk radius at this height
-/// * `trunk_direction` - Trunk axis direction (typically Vector3::UP)
-/// * `branch_radius` - Branch base radius
-/// * `collar_length` - How far collar extends (controls transition length)
-/// * `radial_segments` - Segments around circumference
-pub fn generate_branch_collar(
-    branch_start: Vector3,
-    branch_direction: Vector3,
-    trunk_center: Vector3,
-    trunk_radius: f32,
-    trunk_direction: Vector3,
-    branch_radius: f32,
-    collar_length: f32,
-    radial_segments: i32,
-) -> MeshData {
-    let mut mesh = MeshData::new();
-
-    let segments = radial_segments.max(3) as usize;
-    let rings = 3usize; // Ring 0 on trunk surface, Ring 1 transition, Ring 2 at branch start
-
-    // === Ring 0: On trunk surface ===
-    // Radial direction from trunk center to branch attachment point
-    let radial = (branch_start - trunk_center)
-        .try_normalized()
-        .unwrap_or(Vector3::new(1.0, 0.0, 0.0));
-
-    // Position ring 0 on trunk surface
-    let ring0_center = trunk_center + radial * trunk_radius;
-
-    // Ring 0 radius scales with branch but bounded by trunk proportion
-    let ring0_radius = (branch_radius * 1.2).min(trunk_radius * 0.35);
-
-    // Ring 0 basis: perpendicular to radial, one axis aligned with trunk_direction
-    let ring0_right = trunk_direction
-        .cross(radial)
-        .try_normalized()
-        .unwrap_or_else(|| get_perpendicular(radial));
-    let ring0_forward = radial.cross(ring0_right);
-
-    // === Ring 2: At branch start (MUST match branch mesh first ring exactly) ===
-    let ring2_center = branch_start;
-    let ring2_radius = branch_radius;
-
-    // Use SAME basis construction as generate_branch_mesh_with_resolution
-    let ring2_right = get_perpendicular(branch_direction);
-    let ring2_forward = branch_direction.cross(ring2_right);
-
-    // === Ring 1: Interpolated transition ===
-    let ring1_center = ring0_center.lerp(ring2_center, 0.5);
-    let ring1_radius = lerp(ring0_radius, ring2_radius, 0.5);
-
-    // Interpolate direction and rebuild basis
-    let ring1_dir = radial
-        .lerp(branch_direction, 0.5)
-        .try_normalized()
-        .unwrap_or(branch_direction);
-    let ring1_right = get_perpendicular(ring1_dir);
-    let ring1_forward = ring1_dir.cross(ring1_right);
-
-    // Pre-compute ring data
-    let ring_centers = [ring0_center, ring1_center, ring2_center];
-    let ring_radii = [ring0_radius, ring1_radius, ring2_radius];
-    let ring_rights = [ring0_right, ring1_right, ring2_right];
-    let ring_forwards = [ring0_forward, ring1_forward, ring2_forward];
-    let ring_normals_outward = [radial, ring1_dir, branch_direction];
-
-    // Smooth weight: thick short collars get more smoothing (junction areas)
-    let smooth_amount = (branch_radius / collar_length.max(0.001)).min(1.0);
-
-    // Generate rings of vertices
-    for ring in 0..rings {
-        let t = ring as f32 / (rings - 1) as f32;
-        let pos = ring_centers[ring];
-        let radius = ring_radii[ring];
-        let right = ring_rights[ring];
-        let forward = ring_forwards[ring];
-        let outward_dir = ring_normals_outward[ring];
-
-        // Weight is strongest at the base (trunk junction) and decreases toward tip
-        let ring_weight = smooth_amount * (1.0 - t * 0.5);
-
-        let v = t;
-
-        for seg in 0..=segments {
-            let angle = (seg as f32 / segments as f32) * TAU;
-
-            let local_x = angle.cos() * radius;
-            let local_z = angle.sin() * radius;
-
-            // Transform to world space using this ring's basis
-            let offset = right * local_x + forward * local_z;
-            let vertex = pos + offset;
-
-            // Normal blends between radial (outward from trunk) at ring 0
-            // and perpendicular to branch at ring 2
-            let local_normal = (right * angle.cos() + forward * angle.sin()).normalized();
-            // Blend outward direction for ring 0 to give "bulge" effect
-            let normal = if ring == 0 {
-                (local_normal * 0.7 + outward_dir * 0.3).normalized()
-            } else {
-                local_normal
-            };
-
-            mesh.vertices.push(vertex);
-            mesh.normals.push(normal);
-            mesh.uvs.push(Vector2::new(seg as f32 / segments as f32, v));
-            mesh.smooth_weights.push(ring_weight);
-        }
-    }
-
-    // Generate indices for collar sides (connect rings with triangles)
-    let verts_per_ring = segments + 1;
-    for ring in 0..(rings - 1) {
-        for seg in 0..segments {
-            let current = (ring * verts_per_ring + seg) as i32;
-            let next = (ring * verts_per_ring + seg + 1) as i32;
-            let above = ((ring + 1) * verts_per_ring + seg) as i32;
-            let above_next = ((ring + 1) * verts_per_ring + seg + 1) as i32;
-
-            // Two triangles per quad (counter-clockwise winding for front faces)
-            mesh.indices.extend_from_slice(&[current, next, above]);
-            mesh.indices.extend_from_slice(&[next, above_next, above]);
-        }
-    }
-
-    mesh
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2130,8 +1422,12 @@ pub fn grow_branches_bfs(
     }
 
     let mut batch_size = queue.len();
+    const MAX_SEGMENTS: usize = 50_000;
 
     while let Some((parent_idx, mut info, depth)) = queue.pop_front() {
+        if segments.len() >= MAX_SEGMENTS {
+            break;
+        }
         if batch_size == 0 {
             let mut infos_vec: Vec<(usize, BranchGrowthInfo)> = queue
                 .iter()
@@ -2981,19 +2277,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolution_zero_uses_legacy() {
-        let config = test_config(0.0); // resolution=0 → legacy path
-                                       // This test verifies the legacy path still works
-        let mut rng = SeededRng::new(42);
-        let segments = generate_branch_origins(&config, &mut rng);
-        // Legacy path should still work with the new fields
-        assert!(
-            !segments.is_empty(),
-            "Legacy path should still generate branches"
-        );
-    }
-
-    #[test]
     fn test_sub_branches_multi_segment() {
         let mut config = test_config(2.0);
         config.branch_recursion = 1;
@@ -3012,48 +2295,6 @@ mod tests {
             "Should have sub-branches (depth 1), got {} depth-0 and {} depth-1",
             depth0_count,
             depth1_count
-        );
-    }
-
-    #[test]
-    fn test_trunk_twist_affects_branch_origins() {
-        // Test that trunk_twist rotates branch origins around Y axis
-        let mut config = test_config(0.0);
-        config.trunk_twist = 0.0;
-        config.trunk_height = 10.0;
-        config.branch_start = 0.5; // Branch at half height
-        config.branch_end = 0.6;
-        config.branch_density = 100.0; // Force one branch
-        config.phyllotaxis_angle = 0.0; // Start at angle 0
-
-        let mut rng1 = SeededRng::new(42);
-        let branches_no_twist = generate_branch_origins(&config, &mut rng1);
-
-        config.trunk_twist = 90.0; // 90 degree twist over full height
-        let mut rng2 = SeededRng::new(42);
-        let branches_with_twist = generate_branch_origins(&config, &mut rng2);
-
-        // Both should generate branches
-        assert!(
-            !branches_no_twist.is_empty(),
-            "Should generate branches without twist"
-        );
-        assert!(
-            !branches_with_twist.is_empty(),
-            "Should generate branches with twist"
-        );
-
-        // At t=0.5 (half height), a 90° twist means 45° rotation
-        // The X and Z coordinates should differ due to rotation
-        let b1 = &branches_no_twist[0];
-        let b2 = &branches_with_twist[0];
-
-        // Check that positions differ (twist was applied)
-        let pos_diff = (b1.start - b2.start).length();
-        assert!(
-            pos_diff > 0.001,
-            "Trunk twist should change branch origin position. Diff: {}",
-            pos_diff
         );
     }
 

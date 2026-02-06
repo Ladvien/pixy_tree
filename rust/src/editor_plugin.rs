@@ -160,7 +160,7 @@ impl PixyTreePlugin {
 
     #[func]
     fn on_clear_pressed(&mut self) {
-        self.call_tree_method("clear");
+        self.call_tree_method("reset_all");
     }
 }
 
